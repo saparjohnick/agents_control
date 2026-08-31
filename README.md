@@ -28,15 +28,15 @@ outside: the port only binds to 127.0.0.1, there are no incoming connections.
 On macOS, terminal control (sending commands, reading the screen,
 creating tabs) works through iTerm2 or tmux — Terminal.app isn't
 supported. Notifications about questions and permissions aren't tied to
-a terminal at all: their source is the agent's hooks, which work
+a terminal at all: their source is Claude Code's hooks, which work
 everywhere, including sessions with no terminal (a VS Code session, for
-instance), but for now only for Claude Code.
+instance).
 
 ## Why
 
 You need to run a command in a session, check the screen, or switch to
 a tab, and you're not at the computer — now you can do that from
-Telegram. If the session is Claude Code, there's a bonus too: the agent
+Telegram. If the session is Claude Code, there's a bonus too: it
 stops and waits for an answer — the question and its buttons arrive in
 Telegram, no need to go home just to say "continue."
 
@@ -113,15 +113,16 @@ to force it to refresh.
 
 ### Two modes
 
-While you're at the keyboard, intercepting agent questions is
-counterproductive: you'll answer in the terminal faster than you can
-reach for your phone, and a blocked hook keeps the dialog from ever
-appearing on screen. So there are two modes:
+This whole section is about Claude Code specifically — its hooks are
+what makes any of it possible. While you're at the keyboard,
+intercepting its questions is counterproductive: you'll answer in the
+terminal faster than you can reach for your phone, and a blocked hook
+keeps the dialog from ever appearing on screen. So there are two modes:
 
 - **present** (default) — questions are mirrored to Telegram but stay
   in the terminal;
 - **away** (`/away`) — a question arrives with buttons and waits for a
-  reply; the agent stands by until you answer or time runs out.
+  reply; Claude Code stands by until you answer or time runs out.
 
 A question can also be answered by replying directly to the message —
 it goes to the right session, even with several tabs open.
@@ -143,14 +144,14 @@ the wrong place.
 
 A "continue" reply is sent automatically, but tool permissions aren't.
 These are two independent settings on purpose: merged into one, they'd
-produce an agent that approves itself everything while nobody's
-watching. A question that offers a choice ("rewrite it or leave it?")
-is never answered automatically, even if it contains the word "continue."
+let it approve itself everything while nobody's watching. A question
+that offers a choice ("rewrite it or leave it?") is never answered
+automatically, even if it contains the word "continue."
 
 ### Hooks
 
 The daemon connects hooks on start and removes them on stop — otherwise
-the agent prints a warning about an unreachable address in every
+Claude Code prints a warning about an unreachable address in every
 session. If the daemon crashed and the hooks are still there:
 
 ```sh
@@ -207,7 +208,7 @@ catches this and suggests `pmset repeat wakeorpoweron`.
 
 ## Watchers
 
-Hooks see the agent's own decisions, but not everything: the CLI's own
+Hooks see Claude Code's own decisions, but not everything: the CLI's own
 local menus (model switch, folder trust) and text on screen (a
 rate-limit message) aren't covered by hooks at all — these events never
 produce a single hook call. Two independent watchers handle them,

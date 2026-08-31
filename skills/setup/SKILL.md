@@ -1,6 +1,6 @@
 ---
 name: agents-control-setup
-description: Use when the user wants Telegram notifications or remote control for this (or another) terminal AI agent session — helps install and configure agents_control.
+description: Use when the user wants Telegram notifications for a Claude Code session, or remote control for this (or another) terminal AI agent session — helps install and configure agents_control.
 ---
 
 agents_control is a Ruby daemon that watches Claude Code sessions (via
