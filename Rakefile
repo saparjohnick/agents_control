@@ -35,11 +35,15 @@ namespace :version do
   end
 end
 
-desc "Full release: tests, sync plugin manifests, tag/push/build/publish the gem, cut a GitHub release"
+desc "Full release: tests, sync plugin manifests, tag/push/build/publish the gem, " \
+     "cut a GitHub release, tag the plugin for Claude Code's own marketplace tooling"
 task ship: [:test, "version:sync"] do
+  sh "claude", "plugin", "validate", ".", "--strict"
+
   Rake::Task["release"].invoke
 
   require_relative "lib/agents_control/version"
   version = AgentsControl::VERSION
   sh "gh", "release", "create", "v#{version}", "--title", "v#{version}", "--generate-notes"
+  sh "claude", "plugin", "tag", ".", "--push", "-m", "agents-control %s"
 end
