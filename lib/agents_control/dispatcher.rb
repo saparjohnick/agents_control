@@ -50,6 +50,16 @@ module AgentsControl
         return nil
       end
 
+      # AskUserQuestion's answer is never delivered through the hook
+      # response — only allow/deny is. Blocking here would just hold the
+      # hook open for the full reply_timeout and then auto-deny, with
+      # nothing gained: the actual answer has to be typed into the
+      # terminal, which Channel does directly, unconditionally.
+      if event.ask_user_question?
+        notify(event)
+        return nil
+      end
+
       # A human is at the keyboard — don't get in their way, just notify.
       unless away?
         notify(event)

@@ -323,6 +323,7 @@ module AgentsControl
           when "transcript" then show_transcript(chat_id, payload)
           when "setting" then change_setting(chat_id, payload)
           when "menu_choice" then choose_menu_option(chat_id, payload)
+          when "ask_question_choice" then answer_ask_user_question(chat_id, payload)
           else act_on_session(chat_id, payload)
           end
         end
@@ -360,6 +361,18 @@ module AgentsControl
 
           ok = @registry.backend_for(session).send_text(session.id, payload["choice"].to_s)
           say(chat_id, ok ? "Chose \"#{payload['choice']}\" in #{session.label}." : "Couldn't send the choice.")
+        end
+
+        # Same mechanism as choose_menu_option: types the option number
+        # straight into the pane. AskUserQuestion's answer never flows
+        # through the hook — it's always been resolved by hand at the
+        # terminal, and this just sends the same keystroke a human would.
+        def answer_ask_user_question(chat_id, payload)
+          session = @registry.refresh.find(payload["session_id"])
+          return say(chat_id, "That session is already closed.") unless session
+
+          ok = @registry.backend_for(session).send_text(session.id, payload["choice"].to_s)
+          say(chat_id, ok ? "Sent to #{session.label}." : "Couldn't send the choice.")
         end
 
         def show_transcript(chat_id, payload)

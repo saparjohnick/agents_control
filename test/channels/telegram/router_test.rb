@@ -394,6 +394,29 @@ module AgentsControl
           assert_includes @api.last_text, "already closed"
         end
 
+        # A tapped AskUserQuestion option button, same idea as
+        # menu_choice: no hook involved, just the same keystroke a human
+        # would type into the pane.
+        def test_ask_question_choice_sends_the_number_into_the_pane
+          key = @store.put({ "action" => "ask_question_choice", "session_id" => Fixtures::BACKEND_API_ID,
+                            "choice" => 2 })
+
+          @router.handle(pressed(key, chat_id: OWNER))
+
+          call = @executor.call_with(Fixtures::BACKEND_API_ID)
+          assert_includes call[:stdin], "2"
+          assert_includes @api.last_text, "Sent"
+        end
+
+        def test_ask_question_choice_on_a_closed_session_is_reported
+          key = @store.put({ "action" => "ask_question_choice", "session_id" => "no-such-session",
+                            "choice" => 1 })
+
+          @router.handle(pressed(key, chat_id: OWNER))
+
+          assert_includes @api.last_text, "already closed"
+        end
+
         def test_stale_number_is_reported
           @router.handle(incoming("/run 99 ls", chat_id: OWNER))
 

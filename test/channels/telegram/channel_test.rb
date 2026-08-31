@@ -130,45 +130,130 @@ module AgentsControl
 
         # ── AskUserQuestion ──────────────────────────────────────────────
         #
-        # This isn't a request for tool access, it's a question with
-        # answer options — neither "Allow"/"Deny" picks one of them, and
-        # a reply to the message never reaches it: it can only be
-        # answered in the terminal.
+        # Not a request for tool access, so "Allow"/"Deny" don't apply —
+        # and unlike a regular permission request, this never blocks the
+        # hook (see dispatcher_test.rb), so it always goes through
+        # notify, never ask.
 
-        def test_ask_user_question_gets_no_permission_buttons
-          Thread.new { @channel.ask(ask_user_question_event, pending: Pending.new, timeout: 0.3) }
-          wait_for_message
+        def test_ask_user_question_question_and_options_reach_the_message
+          @channel.notify(ask_user_question_event)
 
-          rows = @api.sent.last[:markup][:inline_keyboard]
+          text = unescape_markdown(@api.last_text)
 
-          refute(rows.flatten.any? { |b| b[:text].include?("Allow") })
+          assert_includes text, "Short or detailed?"
+          assert_includes text, "Detailed — Question and options"
+        end
+
+        def test_ask_user_question_mentions_replying_works
+          @channel.notify(ask_user_question_event)
+
+          assert_includes @api.last_text, "reply to this message"
         end
 
         def test_ask_user_question_still_offers_the_context_button
-          Thread.new { @channel.ask(ask_user_question_event, pending: Pending.new, timeout: 0.3) }
-          wait_for_message
+          @channel.notify(ask_user_question_event)
 
           rows = @api.sent.last[:markup][:inline_keyboard]
 
           assert(rows.flatten.any? { |b| b[:text].include?("context") })
         end
 
-        def test_ask_user_question_reply_hint_points_to_the_terminal
-          Thread.new { @channel.ask(ask_user_question_event, pending: Pending.new, timeout: 0.3) }
-          wait_for_message
+        # A real option button, unlike Allow/Deny, has to know which
+        # terminal pane to type into — only offered when the event's cwd
+        # matches exactly one live agent session.
+        def test_ask_user_question_offers_real_buttons_for_an_unambiguous_session
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1")]))
 
-          assert_includes @api.last_text, "Answer in the terminal"
-          refute_includes @api.last_text, "reply to this message"
+          channel.notify(ask_user_question_event)
+
+          rows = @api.sent.last[:markup][:inline_keyboard]
+          labels = rows.flatten.map { |b| b[:text] }
+
+          assert_includes labels, "1. Short"
+          assert_includes labels, "2. Detailed"
         end
 
-        def test_ask_user_question_question_and_options_reach_the_message
-          Thread.new { @channel.ask(ask_user_question_event, pending: Pending.new, timeout: 0.3) }
-          wait_for_message
+        def test_ask_user_question_button_types_the_choice_into_the_resolved_session
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1")]))
 
-          text = unescape_markdown(@api.last_text)
+          channel.notify(ask_user_question_event)
 
-          assert_includes text, "Short or detailed?"
-          assert_includes text, "Detailed — Question and options"
+          rows = @api.sent.last[:markup][:inline_keyboard]
+          key = rows.flatten.find { |b| b[:text] == "2. Detailed" }[:callback_data]
+
+          assert_equal({ "action" => "ask_question_choice", "session_id" => "S1", "choice" => 2 },
+                       @store.get(key))
+        end
+
+        # With no session, or more than one tab sharing the same cwd,
+        # there's no way to know which pane to type into — replying
+        # still works either way, so this isn't a dead end.
+        def test_ask_user_question_has_no_option_buttons_without_a_unique_session
+          channel = channel_with_registry(FakeRegistry.new([]))
+
+          channel.notify(ask_user_question_event)
+
+          rows = @api.sent.last[:markup][:inline_keyboard]
+
+          refute(rows.flatten.any? { |b| b[:text].start_with?("1.") })
+        end
+
+        def test_ask_user_question_has_no_option_buttons_with_an_ambiguous_session
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1"), agent_session("S2")]))
+
+          channel.notify(ask_user_question_event)
+
+          rows = @api.sent.last[:markup][:inline_keyboard]
+
+          refute(rows.flatten.any? { |b| b[:text].start_with?("1.") })
+        end
+
+        # An option that reads as "type your own answer" rather than a
+        # concrete choice has nothing meaningful for a button to type
+        # into the terminal — replying covers it instead.
+        def test_open_ended_options_are_not_turned_into_buttons
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1")]))
+          event = permission_event(
+            tool_name: "AskUserQuestion",
+            tool_input: {
+              "questions" => [
+                { "header" => "Approach", "question" => "Which one?",
+                  "options" => [
+                    { "label" => "Rewrite it", "description" => "Start over" },
+                    { "label" => "Something else", "description" => "Explain what you'd like instead" }
+                  ] }
+              ]
+            }
+          )
+
+          channel.notify(event)
+
+          labels = @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] }
+
+          assert_includes labels, "1. Rewrite it"
+          refute_includes labels, "2. Something else"
+        end
+
+        # More than one question at once — we don't know whether the
+        # terminal expects them answered one at a time or needs a final
+        # submit, so no option buttons are offered rather than guessing.
+        def test_multiple_questions_get_no_option_buttons
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1")]))
+          event = permission_event(
+            tool_name: "AskUserQuestion",
+            tool_input: {
+              "questions" => [
+                { "header" => "A", "question" => "First?", "options" => [{ "label" => "Yes", "description" => "" }] },
+                { "header" => "B", "question" => "Second?", "options" => [{ "label" => "No", "description" => "" }] }
+              ]
+            }
+          )
+
+          channel.notify(event)
+
+          rows = @api.sent.last[:markup][:inline_keyboard]
+
+          refute(rows.flatten.any? { |b| b[:text].start_with?("1.") })
         end
 
         # A regular permission request (not AskUserQuestion) must not
@@ -219,6 +304,23 @@ module AgentsControl
         def wait_for_message(seconds: 2)
           deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
           sleep(0.01) until @api.sent.any? || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        end
+
+        def channel_with_registry(registry)
+          Channel.new(api: @api, store: @store, config: @config, registry: registry)
+        end
+
+        def agent_session(id)
+          Session.new(id: id, backend: :iterm2, tty: "/dev/ttys0#{id[-1]}",
+                     cwd: Fixtures::CWD, agent: :claude_code)
+        end
+
+        class FakeRegistry
+          def initialize(sessions) = @sessions = sessions
+
+          def refresh = self
+
+          def agents = @sessions
         end
       end
     end

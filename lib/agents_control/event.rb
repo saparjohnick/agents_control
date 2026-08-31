@@ -45,6 +45,12 @@ module AgentsControl
     # Does a human need to weigh in. Everything else is background info.
     def question? = %i[needs_permission needs_input].include?(kind)
 
+    # AskUserQuestion is structurally a permission request (it goes
+    # through the same PermissionRequest hook as any tool call), but
+    # answering it means picking one of its listed options — allow/deny
+    # doesn't apply, and neither does the usual reply-becomes-hook-response path.
+    def ask_user_question? = tool_name == "AskUserQuestion"
+
     # Short name of where this is happening. The full path in a
     # notification only gets in the way — what matters in a list is
     # recognizing the project, not seeing /Users/...
@@ -70,7 +76,7 @@ module AgentsControl
     # to pick from; the tool name won't tell a human anything, the
     # question itself is what matters.
     def permission_summary
-      return describe_questions if tool_name == "AskUserQuestion"
+      return describe_questions if ask_user_question?
 
       "#{tool_name}: #{describe_tool}"
     end
