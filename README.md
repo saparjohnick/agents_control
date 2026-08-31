@@ -1,5 +1,7 @@
 # agents_control
 
+[![Gem Version](https://img.shields.io/gem/v/agents_control)](https://rubygems.org/gems/agents_control)
+
 A remote for iTerm2 and its AI agents (Claude Code, Codex) from Telegram:
 tab list, commands, screen, new sessions. For Claude Code — also the
 agent's questions and permission requests: it stops, buttons show up in
