@@ -17,6 +17,14 @@ Gem::Specification.new do |spec|
   spec.homepage    = "https://github.com/saparjohnick/agents_control"
   spec.license     = "Apache-2.0"
 
+  spec.metadata = {
+    "source_code_uri" => "https://github.com/saparjohnick/agents_control",
+    "bug_tracker_uri" => "https://github.com/saparjohnick/agents_control/issues",
+    "documentation_uri" => "https://github.com/saparjohnick/agents_control/blob/main/README.md",
+    "changelog_uri" => "https://github.com/saparjohnick/agents_control/releases",
+    "rubygems_mfa_required" => "true"
+  }
+
   spec.required_ruby_version = ">= 3.1"
 
   # git ls-files is deliberately not used here: the gem must build even
