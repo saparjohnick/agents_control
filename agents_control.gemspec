@@ -7,10 +7,10 @@ Gem::Specification.new do |spec|
   spec.version     = AgentsControl::VERSION
   spec.authors     = ["Sapar Kurmanov"]
 
-  spec.summary     = "Control terminal AI agents from Telegram"
+  spec.summary     = "Control terminal AI agents (Claude Code, Codex) from Telegram"
   spec.description = <<~TEXT
-    A daemon that catches the moments a terminal AI agent stops and waits
-    on a human, and relays them to Telegram — with the question's text and
+    A daemon that catches the moments Claude Code stops and waits on a
+    human, and relays them to Telegram — with the question's text and
     reply buttons. Plus a remote for the terminal itself: list tabs, create
     them, send commands.
   TEXT
