@@ -59,6 +59,12 @@ cd agents_control
 bundle install
 ```
 
+Or as a RubyGem:
+
+```sh
+gem install agents_control
+```
+
 Or straight from Claude Code, as a plugin — the repo doubles as a marketplace:
 
 ```
@@ -69,31 +75,7 @@ Or straight from Claude Code, as a plugin — the repo doubles as a marketplace:
 The plugin doesn't replace the install above — it's just a way to find
 the tool and get install instructions without leaving Claude Code.
 
-## Usage
-
-```sh
-agents_control          # opens the console and stays in the tab
-```
-
-The tool lives in a tab: while it's open, it listens to Telegram and
-receives agent events. Commands inside start with a slash, same as the bot's:
-
-```
-> /sessions          sessions with a live agent
-> /tabs              all terminal tabs
-> /away              intercept agent questions (before stepping out)
-> /settings          settings; /settings away — toggle
-> /doctor            check that everything is in place
-> /quit              quit
-```
-
-State icons: `⏳` working · `▸` at a shell prompt · `🖥` no terminal
-(VS Code) · `·` everything else.
-
-One-off commands exist too — `agents_control sessions`, `doctor`,
-`daemon` — but the normal way to run it is an open console.
-
-### Telegram
+## Telegram
 
 Create a bot with [@BotFather](https://t.me/BotFather) and run the wizard:
 
@@ -176,6 +158,30 @@ agents_control hooks uninstall
 
 Entries in `~/.claude/settings.json` are tagged, and other settings
 aren't touched: installing and removing return the file to exactly its original shape.
+
+## Usage
+
+```sh
+agents_control          # opens the console and stays in the tab
+```
+
+The tool lives in a tab: while it's open, it listens to Telegram and
+receives agent events. Commands inside start with a slash, same as the bot's:
+
+```
+> /sessions          sessions with a live agent
+> /tabs              all terminal tabs
+> /away              intercept agent questions (before stepping out)
+> /settings          settings; /settings away — toggle
+> /doctor            check that everything is in place
+> /quit              quit
+```
+
+State icons: `⏳` working · `▸` at a shell prompt · `🖥` no terminal
+(VS Code) · `·` everything else.
+
+One-off commands exist too — `agents_control sessions`, `doctor`,
+`daemon` — but the normal way to run it is an open console.
 
 ## Rate-limit anchors
 
