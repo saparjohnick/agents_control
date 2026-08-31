@@ -1,0 +1,32 @@
+# Project design doc — local only.
+# Contains machine names, server names, and working project names from measurements.
+/docs/design.html
+
+# Secrets and local settings.
+# Tokens live in the Keychain / libsecret, but better safe than sorry.
+/credentials
+/.env
+*.local.yml
+config.yml
+
+# Daemon runtime
+/run/
+/log/
+*.sock
+*.pid
+*.log
+
+# Ruby
+/.bundle/
+/vendor/bundle/
+/pkg/
+/tmp/
+/coverage/
+*.gem
+Gemfile.lock
+
+# macOS
+.DS_Store
+
+# Local Claude Code state — unrelated to the project.
+/.claude/

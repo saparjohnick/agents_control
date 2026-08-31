@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "agents-control",
+  "owner": {
+    "name": "Sapar Kurmanov",
+    "url": "https://github.com/saparjohnick"
+  },
+  "plugins": [
+    {
+      "name": "agents-control",
+      "source": "./",
+      "description": "Remote-control your terminal AI agent (Claude Code) from Telegram — notifications and replies for stops, questions, and permission requests, even away from your desk.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "tags": ["telegram", "remote-control", "notifications", "claude-code", "iterm2", "tmux", "hooks"]
+    }
+  ]
+}
