@@ -120,6 +120,13 @@ Bot commands:
 
 The number `N` comes from the last list shown.
 
+This list also populates Telegram's own `/` command menu automatically
+— `setup` and every daemon start publish it via the Bot API, no manual
+BotFather step needed. If the menu still shows only `/start` after
+that, it's Telegram's client caching the old list, not a missing step
+on your end: close and reopen the chat, or restart the Telegram app,
+to force it to refresh.
+
 ### Two modes
 
 While you're at the keyboard, intercepting agent questions is
@@ -137,6 +144,18 @@ it goes to the right session, even with several tabs open.
 
 Silence is treated as a refusal. If nobody answered while you were
 out, the action doesn't happen, and the session just keeps waiting in the terminal.
+
+AskUserQuestion is the one exception to all of this: its answer never
+travels back through the hook at all, so there's nothing to block on —
+it always arrives with real buttons for each option, in both modes.
+Tapping one types that choice straight into the terminal, the same
+keystroke you'd type by hand. An open-ended option ("something else,"
+"explain what you mean") has no button — just reply to the message
+with your own words instead. With more than one question in a single
+batch, or several tabs sharing the same directory so the target pane
+is ambiguous, buttons are skipped in favor of a plain reply, since
+guessing at the terminal's exact sequencing there risks typing into
+the wrong place.
 
 A "continue" reply is sent automatically, but tool permissions aren't.
 These are two independent settings on purpose: merged into one, they'd

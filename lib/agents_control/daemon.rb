@@ -146,7 +146,8 @@ module AgentsControl
     end
 
     def channel
-      @channel ||= Channels::Telegram::Channel.new(api: api, store: @store, config: @config)
+      @channel ||= Channels::Telegram::Channel.new(api: api, store: @store, config: @config,
+                                                    registry: Registry.new)
     end
 
     def start_screen_watcher

@@ -49,6 +49,28 @@ module AgentsControl
       assert_equal "allow", response.dig("hookSpecificOutput", "decision", "behavior")
     end
 
+    # ── AskUserQuestion ──────────────────────────────────────────────────
+
+    # Its answer never comes back through the hook response — only
+    # allow/deny does. Blocking here would hold the hook open for the
+    # full reply_timeout for nothing and then auto-deny, regardless of mode.
+    def test_ask_user_question_never_blocks_even_when_away
+      channel = SpyChannel.new(reply: Reply.allow)
+
+      response = build(channel: channel, away: true).handle(ask_user_question_payload)
+
+      assert_empty channel.asked
+      assert_equal 1, channel.notified.size
+      assert_empty response
+    end
+
+    def test_ask_user_question_notifies_while_present_too
+      response = build(away: false).handle(ask_user_question_payload)
+
+      assert_equal 1, @channel.notified.size
+      assert_empty response
+    end
+
     # ── silence ────────────────────────────────────────────────────────────
 
     # Nobody answered while the owner was out — the action doesn't happen.
@@ -191,6 +213,21 @@ module AgentsControl
       config = Config.new({ "answers" => { "away" => away }.merge(extra) })
 
       Dispatcher.new(agents: [@agent], channel: channel, config: config)
+    end
+
+    def ask_user_question_payload
+      Fixtures::HOOK_PERMISSION.merge(
+        "tool_name" => "AskUserQuestion",
+        "tool_input" => {
+          "questions" => [
+            { "header" => "Format", "question" => "Short or detailed?",
+              "options" => [
+                { "label" => "Short", "description" => "Just the question" },
+                { "label" => "Detailed", "description" => "Question and options" }
+              ] }
+          ]
+        }
+      )
     end
   end
 end

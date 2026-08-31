@@ -10,21 +10,28 @@ module AgentsControl
       # because a button physically can't carry more than 64 bytes, and
       # the whole content of an action lives on our side anyway.
       class Channel < Channels::Base
-        def initialize(api:, store:, config:)
+        def initialize(api:, store:, config:, registry: nil)
           @api = api
           @store = store
           @config = config
+          @registry = registry
         end
 
         def ready? = !chats.empty?
 
         # Notify, expecting nothing back.
         def notify(event)
+          return notify_ask_user_question(event) if event.ask_user_question?
+
           broadcast(headline(event), event: event)
         end
 
         # Ask and wait. Blocks the calling thread — and through it, the
         # agent itself, which is holding the hook's HTTP request open.
+        #
+        # Never called with an AskUserQuestion event: Dispatcher routes
+        # those through notify instead, since their answer never flows
+        # through a hook response in the first place.
         def ask(event, pending:, timeout:)
           pending.ask(event, timeout: timeout) do |question_id|
             broadcast(question_text(event), markup: buttons_for(event, question_id),
@@ -33,6 +40,8 @@ module AgentsControl
         end
 
         private
+
+        def registry = @registry ||= Registry.new
 
         def chats = Array(@config.get("telegram.allowed_chat_ids", []))
 
@@ -104,17 +113,8 @@ module AgentsControl
           case event.kind
           when :error then "🔴 #{event.label} #{tag(event)}\n#{event.text}"
           when :finished then "✅ #{event.label} #{tag(event)} — done"
-          else "🔔 #{event.label} #{tag(event)}\n#{format_summary(event)}"
+          else "🔔 #{event.label} #{tag(event)}\n#{event.summary}"
           end
-        end
-
-        # AskUserQuestion carries the question and its options over
-        # several lines — a code block reads better than escaped prose
-        # run together.
-        def format_summary(event)
-          return "```\n#{event.summary}\n```" if event.tool_name == "AskUserQuestion"
-
-          event.summary
         end
 
         # The reply hint lives right in the message: nobody's going to
@@ -122,31 +122,12 @@ module AgentsControl
         def question_text(event)
           head = case event.kind
                  when :needs_permission
-                   "🔐 #{event.label} #{tag(event)} needs permission\n\n#{permission_body(event)}"
+                   "🔐 #{event.label} #{tag(event)} needs permission\n\n`#{event.summary}`"
                  else
                    "❓ #{event.label} #{tag(event)} is waiting for a reply\n\n#{event.text.to_s}"
                  end
 
-          "#{head}\n\n#{reply_hint(event)}"
-        end
-
-        # Same idea as format_summary, but with a one-line variant
-        # embedded in the sentence (`code`) rather than a separate block:
-        # a permission request here is usually short — "Bash: rm -rf build/".
-        def permission_body(event)
-          return "```\n#{event.summary}\n```" if event.tool_name == "AskUserQuestion"
-
-          "`#{event.summary}`"
-        end
-
-        # AskUserQuestion is a local choice made in the terminal, not a
-        # hook decision: replying to this message can't deliver an
-        # answer, it has to be made there.
-        def reply_hint(event)
-          return "⌨️ Answer in the terminal — a reply here won't reach that choice." if
-            event.tool_name == "AskUserQuestion"
-
-          "↩️ reply to this message to write to the agent"
+          "#{head}\n\n↩️ reply to this message to write to the agent"
         end
 
         def buttons_for(event, question_id)
@@ -156,11 +137,7 @@ module AgentsControl
           { inline_keyboard: rows }
         end
 
-        # "Allow"/"Deny" don't answer the question itself — AskUserQuestion
-        # is waiting for an option to be picked, not a tool-access decision.
         def action_rows(event, question_id)
-          return [] if event.tool_name == "AskUserQuestion"
-
           event.kind == :needs_permission ? permission_rows(question_id) : input_rows(question_id)
         end
 
@@ -208,6 +185,66 @@ module AgentsControl
         end
 
         def ttl = @config.get("answers.reply_timeout", 600) + 300
+
+        # ── AskUserQuestion ────────────────────────────────────────────
+
+        # This never blocks the hook and never carries a question_id:
+        # the answer doesn't come back as a hook decision, it gets typed
+        # straight into the terminal — by a button tap (ask_question_choice,
+        # handled in Router) or by replying with free text (already
+        # routed there by Router#type_into_session, since there's no
+        # pending question tied to this message for it to be mistaken for).
+        def notify_ask_user_question(event)
+          text = "❓ #{event.label} #{tag(event)}\n\n```\n#{event.summary}\n```\n\n" \
+                 "↩️ reply to this message to answer in your own words"
+
+          rows = option_rows(event)
+          rows << [context_button(event, nil)]
+
+          broadcast(text, markup: { inline_keyboard: rows }, event: event)
+        end
+
+        # Only offered when there's exactly one question and exactly one
+        # matching terminal session for its cwd. With more than one
+        # question we don't know whether the terminal expects them
+        # answered one at a time or needs a final submit; with an
+        # ambiguous cwd we don't know which pane to type into. Both
+        # cases fall back to no option buttons — replying still works either way.
+        def option_rows(event)
+          questions = Array(event.tool_input.is_a?(Hash) ? event.tool_input["questions"] : nil)
+          return [] unless questions.size == 1
+
+          session = resolve_session(event)
+          return [] unless session
+
+          option_buttons(session, questions.first)
+        end
+
+        def resolve_session(event)
+          matches = registry.refresh.agents.select { |s| s.cwd == event.cwd && !s.terminalless? }
+          matches.size == 1 ? matches.first : nil
+        end
+
+        # Options that read as an open-ended "type your own answer"
+        # invitation rather than a concrete choice get skipped here —
+        # tapping a button for one would be meaningless, since there's
+        # nothing to type into the terminal on the user's behalf.
+        # Replying with free text already covers this case regardless.
+        OPEN_ENDED_OPTION = /\b(other|something else|none of (?:these|the above)|custom|
+                              explain|describe|my own|not (?:listed|here))\b/xi
+
+        def option_buttons(session, question)
+          Array(question["options"]).each_with_index.filter_map do |option, index|
+            next if open_ended?(option)
+
+            [{ text: "#{index + 1}. #{option['label']}"[0, 60],
+               callback_data: @store.put({ "action" => "ask_question_choice",
+                                           "session_id" => session.id, "choice" => index + 1 },
+                                         ttl: ttl) }]
+          end
+        end
+
+        def open_ended?(option) = "#{option['label']} #{option['description']}".match?(OPEN_ENDED_OPTION)
       end
     end
   end
