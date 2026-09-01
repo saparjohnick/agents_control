@@ -126,6 +126,11 @@ shell command that finishes in a couple of seconds, so there's no
 telling Telegram when it's actually done or needs something, the same
 as replying to one of its own questions.
 
+A tab stuck inside `less`, `vim`, a REPL, or anything else that reads
+keystrokes as its own input rather than a line to submit gets a
+confirmation first instead of a blind send — the text would go to
+whatever's actually running there, not run as a command.
+
 The result stays a live target: replying to it — "y", "n", anything —
 types straight into that same pane and shows what came back, so
 something like `git add -p`'s hunk-by-hunk prompts works as an actual
