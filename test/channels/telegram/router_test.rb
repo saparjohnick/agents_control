@@ -254,17 +254,17 @@ module AgentsControl
         def test_run_sends_text_to_the_tab_and_shows_the_result
           executor = FakeExecutor.new(
             "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
-            Fixtures::BACKEND_API_ID => ["backend_api $ ",
-                                          "backend_api $ \ntotal 8\ndrwxr-xr-x 3 devbox staff 96 some_file"],
+            Fixtures::MOBILE_APP_ID => ["mobile-app $ ",
+                                         "mobile-app $ \ntotal 8\ndrwxr-xr-x 3 devbox staff 96 some_file"],
             "osascript" => Fixtures::ITERM
           )
           router = build_router(executor: executor)
-          router.handle(incoming("/agents", chat_id: OWNER))
-          number = number_of_in(@api.last_text, "backend_api")
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
 
           router.handle(incoming("/run #{number} ls -la", chat_id: OWNER))
 
-          assert executor.called?(Fixtures::BACKEND_API_ID)
+          assert executor.called?(Fixtures::MOBILE_APP_ID)
           assert_includes @api.last_text, "some_file"
         end
 
@@ -274,18 +274,18 @@ module AgentsControl
         def test_run_result_names_the_tty_so_identically_labeled_tabs_are_distinguishable
           executor = FakeExecutor.new(
             "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
-            Fixtures::BACKEND_API_ID => ["backend_api $ ",
-                                          "backend_api $ \ntotal 8\ndrwxr-xr-x 3 devbox staff 96 some_file"],
+            Fixtures::MOBILE_APP_ID => ["mobile-app $ ",
+                                         "mobile-app $ \ntotal 8\ndrwxr-xr-x 3 devbox staff 96 some_file"],
             "osascript" => Fixtures::ITERM
           )
           router = build_router(executor: executor)
-          router.handle(incoming("/agents", chat_id: OWNER))
-          number = number_of_in(@api.last_text, "backend_api")
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
 
           router.handle(incoming("/run #{number} ls -la", chat_id: OWNER))
 
-          assert_includes @api.last_text, "backend\\_api"
-          assert_includes @api.last_text, "ttys017"
+          assert_includes @api.last_text, "mobile\\-app"
+          assert_includes @api.last_text, "ttys002"
         end
 
         # The result shown is only what appeared after the command was
@@ -294,13 +294,13 @@ module AgentsControl
         def test_run_shows_only_new_output_not_the_pre_command_screen
           executor = FakeExecutor.new(
             "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
-            Fixtures::BACKEND_API_ID => ["stale content from before",
-                                          "stale content from before\nfresh command output"],
+            Fixtures::MOBILE_APP_ID => ["stale content from before",
+                                         "stale content from before\nfresh command output"],
             "osascript" => Fixtures::ITERM
           )
           router = build_router(executor: executor)
-          router.handle(incoming("/agents", chat_id: OWNER))
-          number = number_of_in(@api.last_text, "backend_api")
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
 
           router.handle(incoming("/run #{number} ls", chat_id: OWNER))
 
@@ -321,12 +321,12 @@ module AgentsControl
 
           executor = FakeExecutor.new(
             "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
-            Fixtures::BACKEND_API_ID => [before, after],
+            Fixtures::MOBILE_APP_ID => [before, after],
             "osascript" => Fixtures::ITERM
           )
           router = build_router(executor: executor)
-          router.handle(incoming("/agents", chat_id: OWNER))
-          number = number_of_in(@api.last_text, "backend_api")
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
 
           router.handle(incoming("/run #{number} git st", chat_id: OWNER))
 
@@ -347,16 +347,51 @@ module AgentsControl
 
           executor = FakeExecutor.new(
             "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
-            Fixtures::BACKEND_API_ID => [before, after],
+            Fixtures::MOBILE_APP_ID => [before, after],
             "osascript" => Fixtures::ITERM
           )
           router = build_router(executor: executor)
-          router.handle(incoming("/agents", chat_id: OWNER))
-          number = number_of_in(@api.last_text, "backend_api")
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
 
           router.handle(incoming("/run #{number} git st", chat_id: OWNER))
 
           assert_includes @api.last_text, "On branch main"
+        end
+
+        # The regression this session actually shipped live: /run against
+        # an agent used to unconditionally try to capture a "result" a
+        # couple of seconds later — far too soon for a real task, so the
+        # diff comes back empty and falls back to dumping the whole
+        # transcript instead. An agent gets the same treatment replying
+        # to its own question already gets: confirm the send and let
+        # hooks report back whenever it's actually done.
+        def test_run_against_an_agent_just_confirms_the_send
+          project = File.join(@dir, "projects", Transcript.slug("/Users/devbox/projects/backend_api"))
+          FileUtils.mkdir_p(project)
+          File.write(File.join(project, "s.jsonl"), Fixtures::TRANSCRIPT_LINES)
+
+          # An empty capture is exactly what a real agent looks like a
+          # moment after typing — no result yet, nowhere near done. If
+          # show_result were (wrongly) true here, this is precisely what
+          # would fall through to dumping the transcript.
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => "",
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(config: config_with_transcripts, executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/run #{number} implement the new feature", chat_id: OWNER))
+
+          assert_includes @api.last_text, "Sent to"
+          refute_includes @api.last_text, "fix the build"
+          captures = executor.calls.select do |c|
+            c[:argv].include?(Fixtures::BACKEND_API_ID) && c[:stdin].to_s.include?("contents of")
+          end
+          assert_empty captures, "an agent shouldn't have its screen captured at all — hooks own reporting back"
         end
 
         # An agent's input field is live: while it's busy, typed text
@@ -623,12 +658,12 @@ module AgentsControl
         def test_run_shows_the_current_screen_when_no_new_growth_can_be_found
           executor = FakeExecutor.new(
             "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
-            Fixtures::BACKEND_API_ID => "backend_api $ git st\nOn branch main",
+            Fixtures::MOBILE_APP_ID => "mobile-app $ git st\nOn branch main",
             "osascript" => Fixtures::ITERM
           )
           router = build_router(executor: executor)
-          router.handle(incoming("/agents", chat_id: OWNER))
-          number = number_of_in(@api.last_text, "backend_api")
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
 
           router.handle(incoming("/run #{number} git st", chat_id: OWNER))
 
@@ -647,12 +682,12 @@ module AgentsControl
 
           executor = FakeExecutor.new(
             "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
-            Fixtures::BACKEND_API_ID => [before, after],
+            Fixtures::MOBILE_APP_ID => [before, after],
             "osascript" => Fixtures::ITERM
           )
           router = build_router(executor: executor)
-          router.handle(incoming("/agents", chat_id: OWNER))
-          number = number_of_in(@api.last_text, "backend_api")
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
 
           router.handle(incoming("/run #{number} git st", chat_id: OWNER))
 

@@ -200,7 +200,15 @@ module AgentsControl
             if remote?(session)
               confirm_remote(chat_id, session, command)
             else
-              execute(chat_id, session, command, show_result: true)
+              # An agent isn't a shell command that finishes in a
+              # couple of seconds — it's a real task, and hooks already
+              # own telling Telegram when it's actually done or needs
+              # something. Capturing a "result" a moment after typing
+              # would just catch it mid-thought and fall back to
+              # dumping its whole transcript, which isn't a result at
+              # all — same reasoning as replying to an agent's own
+              # question (type_into_session).
+              execute(chat_id, session, command, show_result: !session.agent?)
             end
           end
         end
@@ -514,7 +522,7 @@ module AgentsControl
           case payload["action"]
           when "focus" then focus_session(chat_id, session)
           when "screen" then show_screen(chat_id, session)
-          when "run" then execute(chat_id, session, payload["text"], show_result: true)
+          when "run" then execute(chat_id, session, payload["text"], show_result: !session.agent?)
           when "close_confirm" then say(chat_id, "Close #{session.label}?",
                                         markup: @keyboards.confirm("close", session))
           when "close" then close_session(chat_id, session)
