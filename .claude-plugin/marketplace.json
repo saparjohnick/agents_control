@@ -11,7 +11,7 @@
       "name": "agents-control",
       "source": "./",
       "description": "Remote-control your terminal AI agent (Claude Code) from Telegram — notifications and replies for stops, questions, and permission requests, even away from your desk.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "productivity",
       "tags": ["telegram", "remote-control", "notifications", "claude-code", "iterm2", "tmux", "hooks"]
     }
