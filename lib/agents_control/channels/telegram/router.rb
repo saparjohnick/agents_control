@@ -35,13 +35,14 @@ module AgentsControl
         HELP = (["Commands:", ""] +
                 COMMANDS.map { |name, text, hint| "/#{name}#{hint ? " #{hint}" : ''} — #{text}" }).join("\n")
 
-        def initialize(api:, registry:, store:, config:, keyboards: nil, pending: nil)
+        def initialize(api:, registry:, store:, config:, keyboards: nil, pending: nil, logger: nil)
           @api = api
           @registry = registry
           @store = store
           @config = config
           @keyboards = keyboards || Keyboards.new(store: store)
           @pending = pending
+          @logger = logger
         end
 
         def handle(update)
@@ -95,17 +96,25 @@ module AgentsControl
         end
 
         # First, the exact session by session_id — unambiguous even when
-        # several tabs share one cwd. Matching by cwd is the fallback for
-        # when that tab has already closed.
+        # several tabs share one cwd, and works for any session type:
+        # /run and /screen remember the terminal's own session id, not
+        # an agent's hook id, so this resolves directly whether the
+        # target is an agent or a plain shell tab. Matching by cwd is
+        # the fallback for when that tab has already closed — an agent
+        # match wins there if one exists (the common case: replying to
+        # an agent's own notification), otherwise any matching tab does
+        # (a plain tab mid-interactive-command has no agent to prefer).
         def type_into_session(chat_id, target, text)
           exact = @registry.refresh.find(target["session_id"])
-          return execute(chat_id, exact, text) if exact&.agent? && !exact.terminalless?
+          return execute(chat_id, exact, text, show_result: !exact.agent?) if exact && !exact.terminalless?
 
-          matching = @registry.agents.select { |s| s.cwd == target["cwd"] && !s.terminalless? }
+          candidates = @registry.sessions.select { |s| s.cwd == target["cwd"] && !s.terminalless? }
+          agent_matches = candidates.select(&:agent?)
+          matching = agent_matches.empty? ? candidates : agent_matches
 
           case matching.size
           when 0 then say(chat_id, "#{target['label']} isn't waiting anymore, and I couldn't find the tab.")
-          when 1 then execute(chat_id, matching.first, text)
+          when 1 then execute(chat_id, matching.first, text, show_result: !matching.first.agent?)
           else say(chat_id, "#{target['label']} has several tabs — use /run NUMBER to pick one.")
           end
         end
@@ -188,7 +197,11 @@ module AgentsControl
           with_session(chat_id, number) do |session|
             next say(chat_id, "This session has no terminal — nothing to run there.") if session.terminalless?
 
-            remote?(session) ? confirm_remote(chat_id, session, command) : execute(chat_id, session, command)
+            if remote?(session)
+              confirm_remote(chat_id, session, command)
+            else
+              execute(chat_id, session, command, show_result: true)
+            end
           end
         end
 
@@ -216,13 +229,125 @@ module AgentsControl
         # input: a merged call can fail to send multi-line text at all.
         TYPING_PAUSE = 0.4
 
-        def execute(chat_id, session, command)
+        # How long to wait after the command lands before reading the
+        # screen back. There's no way to know when a command actually
+        # finishes without polling for it, so this is a fixed guess
+        # tuned for the common case (git status, ls, a quick build
+        # check) — long enough for those, short enough not to feel
+        # laggy. A slower command just gets caught mid-flight, same as
+        # looking over someone's shoulder while it's still running;
+        # /screen still shows the up-to-date state a moment later.
+        RUN_SETTLE_PAUSE = 1.2
+
+        def run_result_lines = @config.get("terminal.run_result_lines", 200)
+
+        def execute(chat_id, session, command, show_result: false)
           backend = @registry.backend_for(session)
+          before = show_result ? capture_screen(session, lines: run_result_lines) : nil
 
           ok = backend.send_text(session.id, command, newline: false) &&
                sleep(TYPING_PAUSE).then { backend.send_text(session.id, "", newline: true) }
 
-          say(chat_id, ok ? "Sent to #{session.label}." : "Couldn't send.")
+          return say(chat_id, "Couldn't send.") unless ok
+          return say(chat_id, "Sent to #{session.label}.") unless show_result
+
+          sleep(RUN_SETTLE_PAUSE)
+          show_command_result(chat_id, session, since: before, command: command)
+        end
+
+        # Shows what's new since `since` (the screen right before the
+        # command was typed) rather than an arbitrary tail slice of the
+        # current screen — otherwise a short result could be padded out
+        # with whatever the terminal already had on it a moment ago.
+        def show_command_result(chat_id, session, since:, command:)
+          after = capture_screen(session, lines: run_result_lines)
+          text = new_output_since(after, since, command: command)
+          log("run result: session=#{session.id} before=#{since.to_s.length}b " \
+              "after=#{after.to_s.length}b prefix_match=#{after.to_s.start_with?(since.to_s)} " \
+              "command_anchor=#{command.to_s.strip.length >= MIN_COMMAND_ANCHOR && after.to_s.include?(command.to_s.strip)} " \
+              "result=#{text.to_s.length}b")
+
+          if text && !text.empty?
+            sent = say_chunked(chat_id, "🖥 #{session_descriptor(session)}\n\n", text, code: true)
+            return sent.each { |msg| remember_reply(chat_id, msg, session) }
+          end
+
+          # new_output_since only comes back empty when the capture
+          # itself was empty — a genuinely blank screen. The transcript
+          # fallback below is keyed by cwd, not by this specific session
+          # — several tabs (or VS Code sessions) can sit on the exact
+          # same project directory, and it'll pick whichever of them
+          # wrote to its transcript most recently. For a plain shell tab
+          # that's cross-session noise: a result from a totally
+          # different session shown as if it were this one's. Only
+          # worth the ambiguity when there's genuinely nothing else to
+          # offer — an agent (its own conversation is at least
+          # thematically the right session) or a session with no
+          # terminal at all (nothing else exists to show).
+          return say(chat_id, "The screen is empty.") unless session.agent? || session.terminalless?
+
+          show_agent_context(chat_id, session)
+        end
+
+        # A one- or two-character reply ("y", "n", "q" mid `git add -p`)
+        # turns up constant false matches in ordinary output — not a
+        # safe anchor at all. Anything shorter than this falls straight
+        # through to the prefix/marker fallback instead.
+        MIN_COMMAND_ANCHOR = 3
+
+        # Returns whatever showed up in `after` beyond `since`.
+        #
+        # The command itself is the sharpest anchor available: the
+        # shell echoes it back verbatim, and unlike the prompt (which
+        # looks identical after every command) the command text is
+        # specific to this exact invocation. rindex, not index — the
+        # *last* occurrence is the one nearest to now, i.e. this send,
+        # not some earlier time the same command happened to run. This
+        # is also what makes it more reliable than prefix/marker
+        # matching when the tab is shared with a human actively typing
+        # in it: `since` doesn't have to relate to `after` at all for
+        # this to work, since it just locates the command's own echo
+        # directly.
+        #
+        # An exact prefix match is the fallback: unambiguous whenever
+        # nothing scrolled out of the capture window between the two
+        # snapshots, since `after` is then simply `since` with new
+        # content appended and there's nothing to search for at all.
+        #
+        # Marker search (since's own last two lines, most recent
+        # occurrence) is the last resort, for whatever's too short to
+        # anchor on and doesn't fit as a literal prefix either.
+        #
+        # No matter which method resolves it, an anchor is never
+        # allowed to produce silence: if it lands on nothing (the
+        # reference point itself, unchanged, or a boundary right at the
+        # tail), what's actually on screen right now is still real and
+        # still worth showing — the whole point of /run is seeing the
+        # result, and reporting "no new output" when there's visibly a
+        # result sitting right there is a worse failure than
+        # occasionally including a line of stale context.
+        def new_output_since(after, since, command: nil)
+          after_s = after.to_s
+          since_s = since.to_s
+
+          needle = command.to_s.strip
+          if needle.length >= MIN_COMMAND_ANCHOR
+            index = after_s.rindex(needle)
+            return after_s[index..].to_s if index
+          end
+
+          return after_s if since_s.strip.empty?
+
+          tail = if after_s.start_with?(since_s)
+                   after_s[since_s.length..]
+                 else
+                   marker = since_s.rstrip.lines.last(2).join
+                   index = marker.strip.empty? ? nil : after_s.rindex(marker)
+                   index ? after_s[(index + marker.length)..] : nil
+                 end
+
+          tail = tail.to_s.sub(/\A\n+/, "")
+          tail.empty? ? after_s : tail
         end
 
         def create_tab(chat_id, directory)
@@ -389,7 +514,7 @@ module AgentsControl
           case payload["action"]
           when "focus" then focus_session(chat_id, session)
           when "screen" then show_screen(chat_id, session)
-          when "run" then execute(chat_id, session, payload["text"])
+          when "run" then execute(chat_id, session, payload["text"], show_result: true)
           when "close_confirm" then say(chat_id, "Close #{session.label}?",
                                         markup: @keyboards.confirm("close", session))
           when "close" then close_session(chat_id, session)
@@ -406,21 +531,33 @@ module AgentsControl
         # just finished lines from the transcript. The transcript stays
         # the fallback for terminalless sessions and for a freshly
         # created tab's blank screen.
-        def show_screen(chat_id, session)
-          text = capture_screen(session)
+        def show_screen(chat_id, session, lines: @config.get("terminal.context_lines", 80))
+          text = capture_screen(session, lines: lines)
           if text && !text.empty?
-            sent = say_chunked(chat_id, "", text, code: true)
+            sent = say_chunked(chat_id, "🖥 #{session_descriptor(session)}\n\n", text, code: true)
             return sent.each { |msg| remember_reply(chat_id, msg, session) }
           end
+
+          return say(chat_id, "The screen is empty.") unless session.agent? || session.terminalless?
 
           show_agent_context(chat_id, session)
         end
 
-        def capture_screen(session)
-          @registry.backend_for(session).capture(session.id,
-                                                  lines: @config.get("terminal.context_lines", 80))
+        def capture_screen(session, lines: @config.get("terminal.context_lines", 80))
+          @registry.backend_for(session).capture(session.id, lines: lines)
         rescue Terminals::Unsupported
           nil
+        end
+
+        # The label alone isn't always enough to tell tabs apart — several
+        # can share the same project directory and so the same label. The
+        # tty is what actually distinguishes them, and it's the same
+        # identifier a terminal's own window/tab chrome would show.
+        def session_descriptor(session)
+          return session.label if session.terminalless?
+
+          tty = session.tty.to_s.sub(%r{\A/dev/}, "")
+          tty.empty? ? session.label : "#{session.label} · #{tty}"
         end
 
         def show_agent_context(chat_id, session)
@@ -475,6 +612,10 @@ module AgentsControl
           raise unless e.message.include?("can't parse entities")
 
           @api.send_message(chat_id: chat_id, text: text, reply_markup: markup)
+        end
+
+        def log(message)
+          @logger&.puts("[#{Time.now.strftime('%H:%M:%S')}] #{message}")
         end
       end
     end

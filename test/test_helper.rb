@@ -36,13 +36,14 @@ module AgentsControl
     def initialize(responses = {})
       @responses = responses
       @calls = []
+      @sequence_positions = Hash.new(0)
     end
 
     def run(*argv, stdin: nil, timeout: nil)
       @calls << { argv: argv, stdin: stdin, timeout: timeout }
 
-      _, response = @responses.find { |matcher, _| matches?(matcher, argv) }
-      build(response)
+      matcher, response = @responses.find { |m, _| matches?(m, argv) }
+      build(resolve(matcher, response))
     end
 
     # The arguments of the call that matched a given substring.
@@ -54,7 +55,27 @@ module AgentsControl
 
     private
 
+    # An Array response is a sequence: each call to a matcher advances
+    # one step through it, repeating the last element once exhausted.
+    # Needed for anything that reads the same target twice and expects
+    # to see it change in between, like a before/after screen capture.
+    def resolve(matcher, response)
+      return response unless response.is_a?(Array)
+
+      index = @sequence_positions[matcher]
+      @sequence_positions[matcher] += 1
+      response[[index, response.size - 1].min]
+    end
+
+    # A callable matcher gets the full argv and decides for itself —
+    # needed when a plain substring would match more than one distinct
+    # kind of call (e.g. a session id appears in both its capture calls
+    # and its send_text calls, but only capture should advance an
+    # Array-sequenced response meant to represent that session's screen
+    # changing over time).
     def matches?(matcher, argv)
+      return matcher.call(argv) if matcher.respond_to?(:call)
+
       argv.any? do |arg|
         matcher.is_a?(Regexp) ? arg.to_s.match?(matcher) : arg.to_s.include?(matcher.to_s)
       end
