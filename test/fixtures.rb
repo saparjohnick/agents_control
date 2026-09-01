@@ -91,6 +91,11 @@ module AgentsControl
     # not at every osascript request at once.
     BACKEND_API_ID = "C0172CE5-4114-4B74-8E49-D45A3EB6187A"
 
+    # mobile-app: a tab with no actual agent process (the stale-title
+    # case) — the fixture to reach for whenever a test needs a plain,
+    # non-agent shell tab specifically, as opposed to backend_api.
+    MOBILE_APP_ID = "AD9E50DB-91C0-4966-994C-62091639B101"
+
     SESSION = "b5d47815-19d1-4987-8822-20dc80cc1315"
     TRANSCRIPT = "/Users/devbox/.claude/projects/-tmp-probe/#{SESSION}.jsonl"
     CWD = "/Users/devbox/projects/flightlog"
