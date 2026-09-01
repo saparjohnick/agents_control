@@ -2,7 +2,7 @@
   "name": "agents-control",
   "displayName": "agents_control",
   "description": "Remote-control your terminal AI agent (Claude Code) from Telegram: get notified and reply when it stops for input or needs a permission — even away from your desk.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "author": {
     "name": "Sapar Kurmanov",
     "url": "https://github.com/saparjohnick"
