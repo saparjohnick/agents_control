@@ -14,6 +14,18 @@ module AgentsControl
         # they get a separate confirmation.
         REMOTE_COMMANDS = %w[ssh mosh].freeze
 
+        # Programs that read keystrokes as their own input, not as a
+        # line to submit to a shell. Sending a command into one of
+        # these wouldn't run it — it'd feed the letters to whatever's
+        # already there instead: pager navigation, an editor's insert
+        # mode, a REPL evaluating each character-by-character. Confirmed
+        # against a real incident: `git log`'s pager was still open,
+        # "git status" went in as keystrokes, and nothing about it ran
+        # as a command at all.
+        INTERACTIVE_COMMANDS = %w[less more most vim vi nvim emacs nano pico
+                                   man top htop irb pry python python3 node
+                                   mysql psql sqlite3].freeze
+
         # Shared list for the Telegram menu and for /help: a menu that's
         # drifted from reality is worse than no menu. The third element
         # is the argument syntax, needed only in /help; setMyCommands
@@ -199,6 +211,8 @@ module AgentsControl
 
             if remote?(session)
               confirm_remote(chat_id, session, command)
+            elsif !session.agent? && interactive?(session)
+              confirm_interactive(chat_id, session, command)
             else
               # An agent isn't a shell command that finishes in a
               # couple of seconds — it's a real task, and hooks already
@@ -219,6 +233,10 @@ module AgentsControl
           REMOTE_COMMANDS.include?(session.foreground_command.to_s)
         end
 
+        def interactive?(session)
+          INTERACTIVE_COMMANDS.include?(session.foreground_command.to_s)
+        end
+
         def confirm_remote(chat_id, session, command)
           key = @store.put({ "action" => "run", "session_id" => session.id, "text" => command },
                            ttl: 300)
@@ -230,6 +248,21 @@ module AgentsControl
 
           say(chat_id, "Tab #{session.label} is busy with #{session.foreground_command}.\n" \
                        "The command will go to the remote machine:\n\n`#{command}`",
+              markup: markup)
+        end
+
+        def confirm_interactive(chat_id, session, command)
+          key = @store.put({ "action" => "run", "session_id" => session.id, "text" => command },
+                           ttl: 300)
+
+          markup = { inline_keyboard: [[
+            { text: "⚠️ Send anyway", callback_data: key },
+            { text: "cancel", callback_data: @store.put({ "action" => "cancel" }, ttl: 300) }
+          ]] }
+
+          say(chat_id, "#{session.label} is inside #{session.foreground_command} right now, " \
+                       "not at a shell prompt — the text would go to that, not run as a command:\n\n" \
+                       "`#{command}`",
               markup: markup)
         end
 

@@ -394,6 +394,49 @@ module AgentsControl
           assert_empty captures, "an agent shouldn't have its screen captured at all — hooks own reporting back"
         end
 
+        # The actual incident this guards against: a tab left inside
+        # `less` (from a plain `git log`), and /run typed a command into
+        # it anyway — the letters became pager navigation, not a shell
+        # command, and none of it ran at all. Sending straight in was
+        # wrong; a confirmation first is the fix.
+        def test_run_asks_before_sending_into_a_pager
+          pager_ps = Fixtures::PS.sub("ttys000   6378 S+   ssh", "ttys000   6378 S+   less")
+          executor = FakeExecutor.new(
+            "-o" => pager_ps, "-Fn" => Fixtures::LSOF,
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of("ttys000")
+
+          router.handle(incoming("/run #{number} git status", chat_id: OWNER))
+
+          assert_includes @api.last_text, "less"
+          refute executor.called?("D63D6009-F477-44EE-B890-54C1B30E8B69")
+          markup = @api.sent.last[:markup]
+          assert markup, "should offer a confirm/cancel choice, not send blindly"
+        end
+
+        # Confirming sends it through exactly like a normal /run would.
+        def test_confirmed_pager_send_goes_through
+          pager_ps = Fixtures::PS.sub("ttys000   6378 S+   ssh", "ttys000   6378 S+   less")
+          session_id = "D63D6009-F477-44EE-B890-54C1B30E8B69"
+          executor = FakeExecutor.new(
+            "-o" => pager_ps, "-Fn" => Fixtures::LSOF,
+            session_id => "",
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of("ttys000")
+          router.handle(incoming("/run #{number} git status", chat_id: OWNER))
+
+          key = @api.sent.last[:markup][:inline_keyboard][0][0][:callback_data]
+          router.handle(pressed(key, chat_id: OWNER))
+
+          assert executor.called?(session_id)
+        end
+
         # An agent's input field is live: while it's busy, typed text
         # lands there as a delayed message, and a merged newline can end
         # up staying part of the text instead of submitting — in the
