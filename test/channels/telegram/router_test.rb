@@ -248,13 +248,115 @@ module AgentsControl
           assert_nil @api.sent.last[:parse_mode]
         end
 
-        def test_run_sends_text_to_the_tab
-          @router.handle(incoming("/agents", chat_id: OWNER))
+        # /run doesn't just confirm the command was typed — it reads the
+        # screen back afterward and shows the actual result, the same
+        # way /screen would.
+        def test_run_sends_text_to_the_tab_and_shows_the_result
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => ["backend_api $ ",
+                                          "backend_api $ \ntotal 8\ndrwxr-xr-x 3 devbox staff 96 some_file"],
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
           number = number_of_in(@api.last_text, "backend_api")
-          @router.handle(incoming("/run #{number} ls -la", chat_id: OWNER))
 
-          assert @executor.called?("osascript")
-          assert_includes @api.last_text, "Sent"
+          router.handle(incoming("/run #{number} ls -la", chat_id: OWNER))
+
+          assert executor.called?(Fixtures::BACKEND_API_ID)
+          assert_includes @api.last_text, "some_file"
+        end
+
+        # With several tabs sharing the same label (same project directory
+        # open twice), the label alone can't tell them apart — the reply
+        # needs to name the actual tab the result came from.
+        def test_run_result_names_the_tty_so_identically_labeled_tabs_are_distinguishable
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => ["backend_api $ ",
+                                          "backend_api $ \ntotal 8\ndrwxr-xr-x 3 devbox staff 96 some_file"],
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/run #{number} ls -la", chat_id: OWNER))
+
+          assert_includes @api.last_text, "backend\\_api"
+          assert_includes @api.last_text, "ttys017"
+        end
+
+        # The result shown is only what appeared after the command was
+        # typed, not whatever was already sitting on screen — the
+        # pre-command prompt line must not leak into the reply.
+        def test_run_shows_only_new_output_not_the_pre_command_screen
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => ["stale content from before",
+                                          "stale content from before\nfresh command output"],
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/run #{number} ls", chat_id: OWNER))
+
+          assert_includes @api.last_text, "fresh command output"
+          refute_includes @api.last_text, "stale content from before"
+        end
+
+        # A shell prompt repeats after every command, so stale repeats
+        # from earlier runs can already be sitting on screen before this
+        # one is even typed — the "before" snapshot itself already
+        # contains them. Only what's typed *after* that snapshot counts
+        # as new; the two stale repeats already there must not leak in
+        # alongside the real result.
+        def test_run_finds_the_most_recent_prompt_not_a_stale_repeat
+          stale = "prompt> git st\nOn branch main\nnothing to commit\n"
+          before = "#{stale * 2}prompt> "
+          after = "#{before}git st\nOn branch main\nnothing to commit\nprompt> "
+
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => [before, after],
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/run #{number} git st", chat_id: OWNER))
+
+          assert_equal 1, @api.last_text.scan("On branch main").size
+        end
+
+        # A prompt-matching approach breaks the moment the *new* run's own
+        # trailing prompt looks identical to the boundary marker — search
+        # naturally finds the newest, wrong occurrence, right at the very
+        # end of the capture, and returns next to nothing. This is the
+        # actual bug that shipped live: re-running an identical command
+        # against an already-repeating prompt produced an empty result.
+        # An exact prefix match sidesteps the ambiguity entirely — no
+        # searching needed when nothing scrolled out of the window.
+        def test_run_result_is_not_swallowed_by_the_commands_own_new_prompt
+          before = "prompt> git st\nOn branch main\nnothing to commit\nprompt> "
+          after = "#{before}git st\nOn branch main\nnothing to commit\nprompt> "
+
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => [before, after],
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/run #{number} git st", chat_id: OWNER))
+
+          assert_includes @api.last_text, "On branch main"
         end
 
         # An agent's input field is live: while it's busy, typed text
@@ -336,13 +438,21 @@ module AgentsControl
         end
 
         def test_confirmed_remote_command_is_executed
-          @router.handle(incoming("/tabs", chat_id: OWNER))
-          @router.handle(incoming("/run #{number_of('ttys000')} uptime", chat_id: OWNER))
+          ssh_session_id = "D63D6009-F477-44EE-B890-54C1B30E8B69"
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            ssh_session_id => ["dev@relay:~$ ", "dev@relay:~$ \nuptime output here"],
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          router.handle(incoming("/run #{number_of('ttys000')} uptime", chat_id: OWNER))
 
           key = @api.sent.last[:markup][:inline_keyboard][0][0][:callback_data]
-          @router.handle(pressed(key, chat_id: OWNER))
+          router.handle(pressed(key, chat_id: OWNER))
 
-          assert_includes @api.last_text, "Sent"
+          assert executor.called?(ssh_session_id)
+          assert_includes @api.last_text, "uptime output here"
         end
 
         # If "All tabs" and "Agents" numbered against their own filtered
@@ -369,7 +479,9 @@ module AgentsControl
           @router.handle(incoming("/agents", chat_id: OWNER))
           @router.handle(incoming("/run #{number} echo hello", chat_id: OWNER))
 
-          assert_includes unescape_markdown(@api.last_text), "backend_api"
+          writes = @executor.calls.select { |c| c[:argv].include?("echo hello") }
+          assert_equal 1, writes.size
+          assert_includes writes.first[:argv], Fixtures::BACKEND_API_ID
         end
 
         # A reply to a local CLI menu (ScreenWatcher): there's no
@@ -455,6 +567,121 @@ module AgentsControl
           assert_includes @api.last_text, "no transcript was found"
         end
 
+        # The transcript fallback is keyed by cwd, not by session — a
+        # plain (non-agent) tab sharing a project directory with some
+        # unrelated Claude session must never surface that session's
+        # transcript as if it were its own screen. A transcript file is
+        # deliberately planted here to prove it stays untouched, not just
+        # absent.
+        def test_plain_tabs_empty_screen_never_leaks_an_unrelated_transcript
+          project = File.join(@dir, "projects", Transcript.slug("/Users/devbox/projects/mobile-app"))
+          FileUtils.mkdir_p(project)
+          File.write(File.join(project, "s.jsonl"), Fixtures::TRANSCRIPT_LINES)
+
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            "AD9E50DB-91C0-4966-994C-62091639B101" => "",
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(config: config_with_transcripts, executor: executor)
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
+
+          router.handle(incoming("/screen #{number}", chat_id: OWNER))
+
+          assert_includes @api.last_text, "screen is empty"
+          refute_includes @api.last_text, "fix the build"
+        end
+
+        # Same guarantee for /run's result: an actually-empty screen on a
+        # plain tab must not turn into an unrelated Claude session's
+        # transcript.
+        def test_plain_tabs_empty_run_result_never_leaks_an_unrelated_transcript
+          project = File.join(@dir, "projects", Transcript.slug("/Users/devbox/projects/mobile-app"))
+          FileUtils.mkdir_p(project)
+          File.write(File.join(project, "s.jsonl"), Fixtures::TRANSCRIPT_LINES)
+
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            "AD9E50DB-91C0-4966-994C-62091639B101" => "",
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(config: config_with_transcripts, executor: executor)
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
+
+          router.handle(incoming("/run #{number} git status", chat_id: OWNER))
+
+          assert_includes @api.last_text, "screen is empty"
+          refute_includes @api.last_text, "fix the build"
+        end
+
+        # No clean boundary doesn't mean nothing to show — the whole
+        # point of /run is seeing the result sitting on screen, so
+        # "couldn't confidently isolate what's new" must still surface
+        # the actual current screen, not go silent.
+        def test_run_shows_the_current_screen_when_no_new_growth_can_be_found
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => "backend_api $ git st\nOn branch main",
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/run #{number} git st", chat_id: OWNER))
+
+          assert_includes @api.last_text, "On branch main"
+        end
+
+        # The scenario that actually shipped live: the tab is also being
+        # used by hand at the same time, so `before` and `after` share
+        # no prefix and no common marker at all by the time they're
+        # captured. The command's own echo is still there regardless —
+        # anchoring on it directly recovers the precise result instead
+        # of falling back to the whole (noisy) capture.
+        def test_run_recovers_the_result_even_when_before_and_after_share_nothing
+          before = "totally unrelated screen state from a moment ago\n$ "
+          after = "completely different content now\ngit st\nOn branch main\nnothing to commit\n$ "
+
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => [before, after],
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/run #{number} git st", chat_id: OWNER))
+
+          assert_includes @api.last_text, "On branch main"
+          refute_includes @api.last_text, "totally unrelated"
+          refute_includes @api.last_text, "completely different content now"
+        end
+
+        # Same reasoning as the /run result: with several tabs sharing a
+        # label, the tty is what actually tells them apart. The capture
+        # text is deliberately something that doesn't itself contain
+        # "backend_api" or "ttys017" — the assertions must be exercising
+        # the header, not coincidentally matching the fixture's own cwd.
+        def test_screen_names_the_tty_in_its_header
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::BACKEND_API_ID => "$ some unrelated screen contents",
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/screen #{number}", chat_id: OWNER))
+
+          assert_includes @api.last_text, "backend\\_api"
+          assert_includes @api.last_text, "ttys017"
+        end
+
         # capture hands back an agent's full screen for a live session,
         # and a large one is delivered in full — as several messages in a
         # row, each of which still fits the Bot API's real limit (4096
@@ -519,6 +746,47 @@ module AgentsControl
           router.handle(reply_to("hello", screen_message_id, chat_id: OWNER))
 
           refute_includes @api.last_text, "don't remember"
+        end
+
+        # A plain shell tab running something interactive (git add -p,
+        # an installer prompt, anything reading single-key answers) has
+        # to work as a back-and-forth: each reply types into the same
+        # pane and shows what came back, not just a "sent" confirmation.
+        def test_reply_drives_an_interactive_command_like_git_add_dash_p
+          mobile_app_id = "AD9E50DB-91C0-4966-994C-62091639B101"
+          # A capture call's only argument is the session id itself;
+          # send_text also carries the id, but with the typed text (or
+          # "" for the Enter call) as the last element — that's how
+          # they're told apart, so send_text calls don't also eat a
+          # step of this sequence meant only for the screen changing
+          # between captures.
+          capture_call = ->(argv) { argv.last == mobile_app_id }
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            capture_call => [
+              "mobile-app $ ",
+              "mobile-app $ \n+++ hunk 1\nStage this hunk [y,n,q]? ",
+              "mobile-app $ \n+++ hunk 1\nStage this hunk [y,n,q]? y",
+              "mobile-app $ \n+++ hunk 1\nStage this hunk [y,n,q]? y\n" \
+              "+++ hunk 2\nStage this hunk [y,n,q]? "
+            ],
+            mobile_app_id => "",
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of("mobile-app")
+
+          router.handle(incoming("/run #{number} git add -p", chat_id: OWNER))
+          assert_includes @api.last_text, "hunk 1"
+          refute_includes @api.last_text, "mobile-app $"
+          reply_target = @api.sent.size
+
+          router.handle(reply_to("y", reply_target, chat_id: OWNER))
+
+          assert_includes @api.last_text, "hunk 2"
+          writes = executor.calls.select { |c| c[:argv].include?("y") }
+          assert_equal 1, writes.size
         end
 
         # ── a reply lands in the right tab ───────────────────────────
@@ -587,6 +855,8 @@ module AgentsControl
           def refresh = self
 
           def find(id) = @sessions.find { |s| s.id == id }
+
+          def sessions = @sessions
 
           def agents = @sessions.select(&:agent?)
 

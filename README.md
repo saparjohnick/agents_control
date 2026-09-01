@@ -97,12 +97,37 @@ Bot commands:
 | `/tabs` | all terminal tabs |
 | `/screen N` | show a tab's screen |
 | `/focus N` | switch to a tab |
-| `/run N command` | run a command in a tab |
+| `/run N command` | run a command in a tab and show the result |
 | `/new [directory]` | create a tab |
 | `/away` | intercept agent questions |
 | `/status` | current status |
 
 The number `N` comes from the last list shown.
+
+`/run` treats the command itself as the reference point: the shell
+echoes back whatever's typed, so it looks for that exact text on
+screen and shows from there — sharper than diffing screenshots, and
+it still works even if something else wrote to the same tab in
+between, since it doesn't need the screen from right before typing to
+relate to the screen after at all. A short reply ("y", "n" mid `git
+add -p`) isn't a safe anchor on its own — too likely to match
+something unrelated — so those fall back to a before/after diff
+instead, and when even that can't cleanly tell what's new, to the
+current screen outright: seeing the result, possibly with a little
+stale context around it, beats not seeing it at all. How much gets
+captured either way is a `/settings` option (`terminal.run_result_lines`,
+200 by default) — a command whose output runs longer just gets its
+last N lines, same as the default gets cut by a screen that's too tall.
+
+The result stays a live target: replying to it — "y", "n", anything —
+types straight into that same pane and shows what came back, so
+something like `git add -p`'s hunk-by-hunk prompts works as an actual
+back-and-forth over Telegram, not a one-shot fire-and-forget.
+
+Both `/run` and `/screen` head their reply with the tab's label and
+tty (`valkyrie · ttys017`) — several tabs can share a label when
+they're open on the same project, and the tty is what actually tells
+them apart.
 
 This list also populates Telegram's own `/` command menu automatically
 — `setup` and every daemon start publish it via the Bot API, no manual

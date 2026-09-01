@@ -234,7 +234,7 @@ module AgentsControl
     def start_bot
       router = Channels::Telegram::Router.new(
         api: api, registry: Registry.new, store: @store,
-        config: @config, pending: pending
+        config: @config, pending: pending, logger: @logger
       )
 
       @bot = Channels::Telegram::Bot.new(api: api, router: router, store: @store,

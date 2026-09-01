@@ -30,7 +30,9 @@ module AgentsControl
           { key: "answers.reply_timeout", label: "Reply timeout",
             values: [300, 600, 900, 1800, 3600], unit: "s", default: 900 },
           { key: "terminal.context_lines", label: "Context lines",
-            values: [40, 80, 200, 500], unit: "", default: 80 }
+            values: [40, 80, 200, 500], unit: "", default: 80 },
+          { key: "terminal.run_result_lines", label: "Command result lines",
+            values: [100, 200, 500, 1000], unit: "", default: 200 }
         ].freeze
 
         def initialize(store:, config:)

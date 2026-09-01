@@ -20,6 +20,15 @@ module AgentsControl
         # working remote control.
         ACTION_TTL = 3600
 
+        # Numbers, unlike buttons, are typed by hand into later messages
+        # — /run N doesn't stay tied to the message the list came in on,
+        # so it has to survive much longer than a single quick trip out.
+        # A closed session is still handled gracefully regardless of how
+        # long the mapping lives (find just returns nil), so the only
+        # cost of a longer TTL is a number eventually pointing at a tab
+        # that's since closed — a clear, expected error either way.
+        LIST_TTL = 86_400
+
         def initialize(store:)
           @store = store
         end
@@ -78,7 +87,7 @@ module AgentsControl
         # land on the same row in a shorter, filtered list.
         def render_list(sessions, chat_id:, title:, universe: sessions)
           numbers = numbered(universe)
-          @store.put(numbers.invert, ttl: ACTION_TTL, key: index_key(chat_id))
+          @store.put(numbers.invert, ttl: LIST_TTL, key: index_key(chat_id))
 
           lines = sessions.map do |session|
             "#{numbers[session.id].to_s.rjust(2)}. #{marker(session)} #{describe(session)}"
