@@ -208,21 +208,29 @@ module AgentsControl
 
           with_session(chat_id, number) do |session|
             next say(chat_id, "This session has no terminal — nothing to run there.") if session.terminalless?
+            next confirm_remote(chat_id, session, command) if remote?(session)
 
-            if remote?(session)
-              confirm_remote(chat_id, session, command)
-            elsif !session.agent? && interactive?(session)
+            # An agent isn't a shell command that finishes in a couple
+            # of seconds — it's a real task, and hooks already own
+            # telling Telegram when it's actually done or needs
+            # something. Capturing a "result" a moment after typing
+            # would just catch it mid-thought and fall back to dumping
+            # its whole transcript, which isn't a result at all — same
+            # reasoning as replying to an agent's own question
+            # (type_into_session).
+            next execute(chat_id, session, command, show_result: false) if session.agent?
+            next confirm_interactive(chat_id, session, command) if interactive?(session)
+
+            # One capture serves two purposes: it's checked for a
+            # pager's bare `:` prompt right here, and reused as
+            # execute()'s own "before" snapshot if it turns out clean —
+            # capturing twice would desync anything that reads the
+            # screen expecting to see it change between calls.
+            before = capture_screen(session, lines: run_result_lines)
+            if paused_for_input?(before)
               confirm_interactive(chat_id, session, command)
             else
-              # An agent isn't a shell command that finishes in a
-              # couple of seconds — it's a real task, and hooks already
-              # own telling Telegram when it's actually done or needs
-              # something. Capturing a "result" a moment after typing
-              # would just catch it mid-thought and fall back to
-              # dumping its whole transcript, which isn't a result at
-              # all — same reasoning as replying to an agent's own
-              # question (type_into_session).
-              execute(chat_id, session, command, show_result: !session.agent?)
+              execute(chat_id, session, command, show_result: true, before: before)
             end
           end
         end
@@ -235,6 +243,17 @@ module AgentsControl
 
         def interactive?(session)
           INTERACTIVE_COMMANDS.include?(session.foreground_command.to_s)
+        end
+
+        # Backstop for interactive? missing a pager by name — a custom
+        # $PAGER, or anything else not on that list. A bare `:` as the
+        # entire last line is the one thing practically every pager in
+        # the less/more lineage agrees on for "waiting on you"; a real
+        # shell prompt always has more on that line than a single
+        # colon. Takes the screen rather than the session so the
+        # caller's own capture can be reused instead of taking another.
+        def paused_for_input?(screen)
+          screen.to_s.rstrip.lines.last.to_s.strip == ":"
         end
 
         def confirm_remote(chat_id, session, command)
@@ -282,9 +301,9 @@ module AgentsControl
 
         def run_result_lines = @config.get("terminal.run_result_lines", 200)
 
-        def execute(chat_id, session, command, show_result: false)
+        def execute(chat_id, session, command, show_result: false, before: nil)
           backend = @registry.backend_for(session)
-          before = show_result ? capture_screen(session, lines: run_result_lines) : nil
+          before ||= capture_screen(session, lines: run_result_lines) if show_result
 
           ok = backend.send_text(session.id, command, newline: false) &&
                sleep(TYPING_PAUSE).then { backend.send_text(session.id, "", newline: true) }
