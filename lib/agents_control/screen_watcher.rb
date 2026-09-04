@@ -95,17 +95,28 @@ module AgentsControl
     # Looks for the last textual occurrence of "❯ 1. …" — the one
     # closest to the screen's current state, not a random numbered list
     # left over somewhere higher in the scrollback.
+    #
+    # Options don't have to be adjacent lines: a richer menu (a skill's
+    # own wizard, say) draws a couple of lines of description under
+    # each one, or a divider before a trailing meta-option ("Chat about
+    # this"). Anything that isn't itself the next numbered option is
+    # just skipped over rather than ending the scan — the option only
+    # actually ends once a numbered line shows up out of sequence
+    # (a stray list elsewhere on screen), which is what keeps this from
+    # picking up something unrelated further down.
     def parse_menu(text)
       lines = text.to_s.each_line.map(&:chomp)
       start = lines.rindex { |line| line.match?(CURSOR_OPTION) }
       return [] unless start
 
       options = [lines[start][CURSOR_OPTION, 1]]
-      index = start + 1
 
-      while index < lines.size && (m = lines[index].match(OPTION)) && m[1].to_i == options.size + 1
+      lines[(start + 1)..].to_a.each do |line|
+        m = line.match(OPTION)
+        next unless m
+        break unless m[1].to_i == options.size + 1
+
         options << m[2]
-        index += 1
       end
 
       options.size >= 2 ? options : []
