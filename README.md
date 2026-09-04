@@ -257,8 +257,10 @@ the full `Registry` — they see bare iTerm2 tabs and tmux panes alike.
 
 **CLI menus** (`terminal.watch_menus`, on by default, polled every 20
 seconds — `terminal.menu_poll_interval`). Notices the "❯ 1. … / 2. …"
-pattern Claude Code uses to draw any choice, and sends it to Telegram
-as buttons — pressing one types the option's number straight into the pane.
+pattern Claude Code (or a skill's own wizard) uses to draw any choice —
+options can carry a couple of lines of description each, or a divider
+before a trailing one — and sends it to Telegram as buttons; pressing
+one types the option's number straight into the pane.
 
 **Limit reset** (`answers.auto_resume_after_limit`, on by default,
 polled once a minute — `terminal.rate_limit_poll_interval`). Notices a

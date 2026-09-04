@@ -34,6 +34,27 @@ module AgentsControl
         ⏸ manual mode on · ? for shortcuts
     SCREEN
 
+    # A real dialog the parser missed: a skill's own wizard menu, where
+    # each option carries a couple of lines of description underneath
+    # it, and a divider sets a trailing meta-option apart from the rest.
+    RICH_WIZARD_SCREEN = <<~SCREEN
+      ←  ☒ Направление  ☐ Тип макетов  ✔ Submit  →
+
+      Макеты статичные или кликабельные?
+
+      ❯ 1. Игровой экран живой
+           Все экраны статичные, но на игровом реально рисуется путь по сетке — можно потрогать саму механику. Рекомендую: именно тут решается, приятная игра или нет.
+        2. Всё статично
+           Чистые визуальные макеты всех экранов. Быстрее, проще править, но механику не пощупать.
+        3. Кликабельный прототип
+           Переходы между экранами, работающие кнопки, живая сетка. Дольше собирать, зато можно пройти весь путь игрока насквозь.
+        4. Type something.
+      ───────────────────────────────────────────────────────────────────
+        5. Chat about this
+
+      Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+    SCREEN
+
     def setup
       @dir = Dir.mktmpdir
       @store = Store.new(path: File.join(@dir, "store.json"))
@@ -55,6 +76,35 @@ module AgentsControl
       watcher_with(FakeBackend.new(MODEL_SCREEN)).tick
 
       assert_includes @api.last_text, "switch to Opus 5"
+    end
+
+    # Regression: a menu whose options each carry a couple of lines of
+    # description used to break detection entirely — the very first
+    # description line didn't look like a numbered option, so the scan
+    # stopped right there and never found a second option at all.
+    def test_recognises_a_menu_with_multi_line_descriptions
+      watcher_with(FakeBackend.new(RICH_WIZARD_SCREEN)).tick
+
+      assert_includes @api.last_text, "Игровой экран живой"
+      assert_includes @api.last_text, "Всё статично"
+      assert_includes @api.last_text, "Кликабельный прототип"
+    end
+
+    # The divider before the trailing meta-option doesn't end the scan
+    # either — it's just another line that isn't itself a numbered
+    # option, same as a description line.
+    def test_recognises_an_option_past_a_divider
+      watcher_with(FakeBackend.new(RICH_WIZARD_SCREEN)).tick
+
+      assert_includes @api.last_text, "Chat about this"
+    end
+
+    def test_rich_wizard_menu_gets_one_button_per_option
+      watcher_with(FakeBackend.new(RICH_WIZARD_SCREEN)).tick
+
+      rows = @api.sent.first[:markup][:inline_keyboard]
+
+      assert_equal 5, rows.size
     end
 
     # A normal Claude Code input prompt also starts with "❯", but with no
