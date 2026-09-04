@@ -437,6 +437,29 @@ module AgentsControl
           assert executor.called?(session_id)
         end
 
+        # interactive? only recognizes a fixed list of pagers by name —
+        # a custom $PAGER wouldn't be on it. The screen itself still
+        # gives it away: a bare `:` as the whole last line is the
+        # classic less/more "waiting on you" prompt, regardless of what
+        # the foreground process is actually called.
+        def test_run_asks_before_sending_when_the_screen_ends_in_a_bare_colon
+          custom_pager_ps = Fixtures::PS.sub("ttys002   1747 S+   -zsh", "ttys002   1747 S+   customviewer")
+          executor = FakeExecutor.new(
+            "-o" => custom_pager_ps, "-Fn" => Fixtures::LSOF,
+            Fixtures::MOBILE_APP_ID => "some long paginated output\n:",
+            "osascript" => Fixtures::ITERM
+          )
+          router = build_router(executor: executor)
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
+
+          router.handle(incoming("/run #{number} git status", chat_id: OWNER))
+
+          writes = executor.calls.select { |c| c[:argv].include?("git status") }
+          assert_empty writes, "should not have sent the command in — it looks like a pager"
+          assert @api.sent.last[:markup], "should offer a confirm/cancel choice, not send blindly"
+        end
+
         # An agent's input field is live: while it's busy, typed text
         # lands there as a delayed message, and a merged newline can end
         # up staying part of the text instead of submitting — in the

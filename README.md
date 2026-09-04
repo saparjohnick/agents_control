@@ -129,7 +129,10 @@ as replying to one of its own questions.
 A tab stuck inside `less`, `vim`, a REPL, or anything else that reads
 keystrokes as its own input rather than a line to submit gets a
 confirmation first instead of a blind send — the text would go to
-whatever's actually running there, not run as a command.
+whatever's actually running there, not run as a command. A pager not
+on that recognized list still gets caught: a bare `:` as the entire
+last line is the one thing practically every pager agrees on for
+"waiting on you," and a real shell prompt never looks like that.
 
 The result stays a live target: replying to it — "y", "n", anything —
 types straight into that same pane and shows what came back, so
