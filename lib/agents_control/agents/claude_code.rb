@@ -31,6 +31,21 @@ module AgentsControl
 
         def binaries = %w[claude]
 
+        # Our own Stop entry, found by the marker rather than by
+        # position. merge_hook appends ours last, so index 0 is someone
+        # else's the moment the user has a Stop hook of their own —
+        # which is common, and which made the startup self-check probe a
+        # stranger's endpoint with a stranger's credentials.
+        def own_hook(path = settings_path)
+          return unless File.exist?(path)
+
+          groups = JSON.parse(File.read(path)).dig("hooks", "Stop")
+          Array(groups).flat_map { |group| Array(group["hooks"]) }
+                       .find { |hook| hook["_agents_control"] }
+        rescue JSON::ParserError
+          nil
+        end
+
         def handles?(payload)
           payload.is_a?(Hash) && payload.key?("hook_event_name")
         end

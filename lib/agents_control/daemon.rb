@@ -187,12 +187,16 @@ module AgentsControl
     # instance, if another agents_control is already running nearby with
     # a different secret.
     def verify_hooks
-      settings = JSON.parse(File.read(Agents::ClaudeCode.settings_path))
-      hook = settings.dig("hooks", "Stop", 0, "hooks", 0)
+      hook = Agents::ClaudeCode.own_hook
       return log("couldn't find our own hooks in settings — events won't arrive") unless hook
 
       code = probe_hook(hook)
       return if code == 200
+
+      if code == :not_loopback
+        return log("WARNING: the hook in settings.json doesn't point at this machine — " \
+                   "run `agents_control hooks install` to put it back.")
+      end
 
       log("WARNING: the hook returned #{code}, agent events won't reach me.")
       log("This usually means another agents_control is running nearby — stop it.")
@@ -200,14 +204,27 @@ module AgentsControl
       log("couldn't verify hooks: #{e.message}")
     end
 
+    # Our own hook is always loopback, and this replays the entry's
+    # headers — which carry its bearer secret. Anything but 127.0.0.1
+    # means the file was edited by something other than us, and the
+    # answer to that is to reinstall the hooks, not to send our
+    # credentials to whatever address is now written there.
+    LOOPBACK = %w[127.0.0.1 localhost ::1].freeze
+
     def probe_hook(hook)
       uri = URI(hook["url"])
+      return :not_loopback unless LOOPBACK.include?(uri.host)
+
       request = Net::HTTP::Post.new(uri)
       request["Content-Type"] = "application/json"
       hook.fetch("headers", {}).each { |key, value| request[key] = value }
       request.body = JSON.generate({ "hook_event_name" => "Ping" })
 
-      Net::HTTP.start(uri.host, uri.port, read_timeout: 5) { |http| http.request(request) }.code.to_i
+      # use_ssl follows the scheme rather than defaulting to off: without
+      # it Net::HTTP writes the request, Authorization header and all, as
+      # cleartext to an https port.
+      Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https",
+                                          read_timeout: 5) { |http| http.request(request) }.code.to_i
     end
 
     def publish_commands

@@ -223,6 +223,45 @@ module AgentsControl
         assert_raises(Error) { @agent.install!("http://127.0.0.1:47653") }
         assert_equal "{this is not json", File.read(@settings)
       end
+      # ── finding our own hook among other people's ────────────────────
+
+      # merge_hook appends ours last, so position is not identity. The
+      # startup self-check used index 0 and therefore probed a stranger's
+      # endpoint — replaying that entry's headers, bearer token included,
+      # to that entry's own address.
+      def test_our_own_hook_is_found_behind_someone_elses
+        path = File.join(@dir, "settings.json")
+        File.write(path, JSON.generate({
+          "hooks" => { "Stop" => [
+            { "hooks" => [{ "type" => "http", "url" => "https://someone-else.example/hook",
+                            "headers" => { "Authorization" => "Bearer not-ours" } }] },
+            { "hooks" => [{ "type" => "http", "url" => "http://127.0.0.1:47653/",
+                            "_agents_control" => true }] }
+          ] }
+        }))
+
+        hook = Agents::ClaudeCode.own_hook(path)
+
+        assert_equal "http://127.0.0.1:47653/", hook["url"]
+      end
+
+      def test_no_hook_of_ours_is_no_hook
+        path = File.join(@dir, "settings.json")
+        File.write(path, JSON.generate({
+          "hooks" => { "Stop" => [{ "hooks" => [{ "url" => "https://someone-else.example/hook" }] }] }
+        }))
+
+        assert_nil Agents::ClaudeCode.own_hook(path)
+      end
+
+      def test_a_missing_or_broken_settings_file_is_no_hook
+        assert_nil Agents::ClaudeCode.own_hook(File.join(@dir, "nothing-here.json"))
+
+        broken = File.join(@dir, "broken.json")
+        File.write(broken, "{not json")
+
+        assert_nil Agents::ClaudeCode.own_hook(broken)
+      end
     end
   end
 end
