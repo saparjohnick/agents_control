@@ -19,6 +19,29 @@ ENV["XDG_STATE_HOME"] = File.join(SANDBOX, "state")
 ENV["CLAUDE_CONFIG_DIR"] = File.join(SANDBOX, "claude")
 FileUtils.mkdir_p(ENV.values_at("XDG_CONFIG_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR"))
 
+# Binaries the code looks up with Which. They are never executed —
+# FakeExecutor stands in for every call — but Which has to *resolve*
+# them, and a lookup that comes back nil takes a whole backend or
+# provider out of the run.
+#
+# That is what made the suite quietly macOS-only. On Linux there is no
+# osascript, so the iTerm2 backend answered every request with a
+# synthetic "not found" and produced no sessions; fifty-six router
+# tests then failed on fixtures that had nothing to parse, and the real
+# reason was three layers down. Same for `security` and `claude`.
+#
+# Which searches the system directories before PATH, so a real binary
+# still wins where the host has one: these are a floor, not a
+# substitution.
+STUB_BIN = File.join(SANDBOX, "bin")
+FileUtils.mkdir_p(STUB_BIN)
+%w[osascript security secret-tool claude tmux ps lsof].each do |name|
+  path = File.join(STUB_BIN, name)
+  File.write(path, "#!/bin/sh\nexit 0\n")
+  File.chmod(0o755, path)
+end
+ENV["PATH"] = "#{ENV.fetch('PATH', '')}#{File::PATH_SEPARATOR}#{STUB_BIN}"
+
 require "minitest/autorun"
 
 Minitest.after_run { FileUtils.remove_entry(SANDBOX) if File.directory?(SANDBOX) }

@@ -6,7 +6,12 @@ require "tmpdir"
 module AgentsControl
   class WhichTest < Minitest::Test
     def test_finds_a_real_system_binary
-      assert_equal "/bin/sh", Which.find("sh")
+      # Not a fixed path: Debian's usrmerge puts it at /usr/bin/sh
+      # while macOS has /bin/sh, and both are the right answer.
+      found = Which.find("sh")
+
+      assert_equal "sh", File.basename(found.to_s)
+      assert File.executable?(found.to_s)
     end
 
     def test_returns_nil_for_missing_binary
