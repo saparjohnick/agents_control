@@ -26,6 +26,9 @@ module AgentsControl
         # noticeably shorter than that.
         CALL_TIMEOUT = 8
 
+        # A phone on a train uploading a screen recording is a slow
+        # request that's still working, not a stuck one.
+        DOWNLOAD_TIMEOUT = 120
 
         Error = Class.new(AgentsControl::Error)
 
@@ -65,6 +68,26 @@ module AgentsControl
             { offset: offset, timeout: timeout, allowed_updates: %w[message callback_query] },
             read_timeout: timeout + 15
           )
+        end
+
+        # Two steps by design on Telegram's side: getFile resolves a
+        # file_id to a path that's valid for about an hour, and the
+        # bytes come from a different host prefix.
+        def file_path_for(file_id)
+          call("getFile", { file_id: file_id })["file_path"]
+        end
+
+        # Streams to disk rather than through memory: a 20MB video read
+        # into a String would sit in the daemon's heap for as long as
+        # Ruby felt like keeping it.
+        #
+        # The download URL carries the token in its path, which is why
+        # this method builds it and nothing else ever sees it — no
+        # caller, no log line, no message back to the chat.
+        def download(file_path, to:, max_bytes: nil)
+          @http.get_to_file(file_url_for(file_path), to, read_timeout: DOWNLOAD_TIMEOUT, max_bytes: max_bytes)
+        rescue Http::NetworkError => e
+          raise Unavailable, redact(e.message)
         end
 
         def send_message(chat_id:, text:, reply_markup: nil, parse_mode: nil)
@@ -139,6 +162,17 @@ module AgentsControl
 
         def url_for(method) = URI("https://#{HOST}/bot#{@token}/#{method}")
 
+        # Telegram serves file bytes from /file/bot<token>/<path>.
+        # Escaped per path segment: the path comes back from the API
+        # and gets to decide part of a URL, so it doesn't get to smuggle
+        # a "?" or a "../" into one.
+        def file_url_for(file_path)
+          segments = file_path.to_s.split("/").reject(&:empty?).map { |part| URI::DEFAULT_PARSER.escape(part) }
+          raise Error, "getFile: refusing a path that escapes its directory" if segments.any? { |s| s == ".." }
+
+          URI("https://#{HOST}/file/bot#{@token}/#{segments.join('/')}")
+        end
+
         # Drop nil fields: Telegram treats them as values that were actually passed.
         def compact(params) = params.compact
 
@@ -170,6 +204,32 @@ module AgentsControl
         # Written straight to the open file as chunks arrive. The caller
         # owns the path; a failure part-way leaves a partial file, which
         # is why callers download to a temporary name and rename.
+        # max_bytes is counted as the bytes arrive, not taken from a
+        # header or from what the sender said the file weighs: both are
+        # claims, and the disk fills either way if they're wrong.
+        def get_to_file(uri, path, read_timeout:, max_bytes: nil)
+          Net::HTTP.start(uri.host, uri.port,
+                          use_ssl: true, open_timeout: 10, read_timeout: read_timeout) do |http|
+            http.request(Net::HTTP::Get.new(uri)) do |response|
+              raise NetworkError, "download failed (HTTP #{response.code})" unless response.is_a?(Net::HTTPSuccess)
+
+              written = 0
+              File.open(path, "wb") do |file|
+                response.read_body do |chunk|
+                  written += chunk.bytesize
+                  raise NetworkError, "the file is larger than expected" if max_bytes && written > max_bytes
+
+                  file.write(chunk)
+                end
+              end
+            end
+          end
+
+          path
+        rescue SystemCallError, Timeout::Error, IOError, OpenSSL::SSL::SSLError, SocketError => e
+          raise NetworkError, e.message
+        end
+
         def post(uri, params, read_timeout:)
           request = Net::HTTP::Post.new(uri)
           request.set_form_data(params)

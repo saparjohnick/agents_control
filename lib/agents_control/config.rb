@@ -17,6 +17,10 @@ module AgentsControl
         # could approve command execution on this machine.
         "allowed_chat_ids" => [],
         "poll_timeout" => 30,
+        # How long a file sent from the phone stays on disk. An agent
+        # reads it within minutes of it arriving; the directory is full
+        # of screenshots and logs, and without a sweep it only grows.
+        "inbox_keep_days" => 14,
         # Whether a destructive command with no passphrase set offers to
         # set one. Turned off by "Don't ask again": someone who has
         # decided they don't want a passphrase shouldn't meet a wizard

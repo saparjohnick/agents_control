@@ -52,7 +52,8 @@ module AgentsControl
         HELP = (["Commands:", ""] +
                 COMMANDS.map { |name, text, hint| "/#{name}#{hint ? " #{hint}" : ''} — #{text}" }).join("\n")
 
-        def initialize(api:, registry:, store:, config:, keyboards: nil, pending: nil, logger: nil, passphrase: nil)
+        def initialize(api:, registry:, store:, config:, keyboards: nil, pending: nil, logger: nil,
+                       passphrase: nil, inbox: nil)
           @api = api
           @registry = registry
           @store = store
@@ -61,6 +62,7 @@ module AgentsControl
           @pending = pending
           @logger = logger
           @passphrase = passphrase || Passphrase.new
+          @inbox = inbox
         end
 
         # Called once by the daemon on start; everything else here is
@@ -97,6 +99,9 @@ module AgentsControl
         def handle_message(message)
           chat_id = message.dig("chat", "id")
           return unless allowed?(chat_id)
+
+          attachment = Inbox.attachment(message)
+          return receive(chat_id, message, attachment) if attachment
 
           text = message["text"].to_s.strip
 
@@ -161,6 +166,60 @@ module AgentsControl
           when 1 then execute(chat_id, matching.first, text, show_result: !matching.first.agent?)
           else say(chat_id, "#{target['label']} has several tabs — use /run NUMBER to pick one.")
           end
+        end
+
+        # A file from the phone becomes a file on disk, and the agent is
+        # handed its path.
+        #
+        # A path and not a link: Telegram serves file bytes from a URL
+        # with the bot token in it, so pasting that into a pane would
+        # put the token in the terminal, in the agent's context, and in
+        # the shell history — and a leaked token is remote code
+        # execution on this machine.
+        def receive(chat_id, message, attachment)
+          path = inbox.fetch(attachment)
+          log("received #{attachment.kind}: #{File.basename(path)}")
+
+          deliver_file(chat_id, message, path)
+        rescue Inbox::TooLarge => e
+          say(chat_id, "That file is #{e.message}.")
+        rescue Api::Error, SystemCallError => e
+          say(chat_id, "Couldn't save that file: #{@api.redact(e.message)}")
+        end
+
+        # Three ways to say where it goes, in order of how explicit they
+        # are: a caption naming a tab, a reply to something already tied
+        # to a session, or neither — in which case the path is just
+        # handed back, since guessing at a target for a file is how it
+        # ends up pasted into the wrong project.
+        def deliver_file(chat_id, message, path)
+          caption = message["caption"].to_s.strip
+
+          if (target = caption[%r{\A/run\s+(\d+)}i, 1])
+            return with_session(chat_id, target) do |session|
+              execute(chat_id, session, with_path(caption.sub(%r{\A/run\s+\d+\s*}i, ""), path),
+                      show_result: !session.agent?)
+            end
+          end
+
+          replied = message["reply_to_message"]
+          remembered = replied && @store.get("reply:#{chat_id}:#{replied['message_id']}")
+          return type_into_session(chat_id, remembered, with_path(caption, path)) if remembered
+
+          say(chat_id, "Saved:\n\n`#{path}`\n\nReply to a session's message with a file to hand it " \
+                       "straight over, or caption it `/run N`.")
+        end
+
+        # Escaped, because a name like "quarterly report.csv" is
+        # entirely ordinary and an unescaped one arrives at the shell as
+        # two arguments. Shellwords leaves a path that needs nothing
+        # alone, so the common case stays readable.
+        def with_path(text, path)
+          [text, Shellwords.escape(path)].reject { |part| part.to_s.empty? }.join(" ")
+        end
+
+        def inbox
+          @inbox ||= Inbox.new(api: @api, keep_days: @config.get("telegram.inbox_keep_days", 14))
         end
 
         def composing_key(chat_id) = "composing:#{chat_id}"

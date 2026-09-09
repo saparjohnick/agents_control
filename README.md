@@ -159,6 +159,50 @@ that, it's Telegram's client caching the old list, not a missing step
 on your end: close and reopen the chat, or restart the Telegram app,
 to force it to refresh.
 
+### Sending files in
+
+Photos, videos, voice notes and documents — logs, a CSV, a spreadsheet,
+a screenshot — can be sent to the bot and handed to a session. The file
+is downloaded to `~/.local/state/agents_control/inbox/` and what reaches
+the pane is its **local path**, so the agent opens it the way it opens
+anything else:
+
+```
+you  › [screenshot.png]  caption: /run 3 why does this render wrong?
+
+pane › why does this render wrong? /Users/you/.local/state/agents_control/inbox/20260907-171530-screenshot.png
+```
+
+Three ways to say where it goes:
+
+| | |
+|---|---|
+| caption `/run N …` | that tab, with the rest of the caption as the message |
+| reply with a file to a session's own message | that session |
+| neither | saved, and the path comes back so you can use it |
+
+Guessing a target for a file is how it ends up pasted into the wrong
+project, so with nothing to go on it isn't guessed. However it gets
+there, a file's path is checked and escaped like anything else typed
+into a pane — a caption is a way of saying `/run`, so it's guarded like
+one.
+
+**A path and never a link, deliberately.** Telegram serves file bytes
+from `https://api.telegram.org/file/bot<TOKEN>/…` — the download URL
+*is* the bot token. Pasting that into a pane would put the token in the
+terminal, in the agent's context, and in the shell history, and a
+leaked token is remote code execution on this machine. The URL is built
+inside the API client and never leaves it.
+
+The name comes from whoever sent the file, so it doesn't get to be a
+path: no separators, no `..`, no leading dot, and cut to a length any
+filesystem takes. Files are written `0600` inside a `0700` directory —
+logs and screenshots are exactly what carries a token or a customer's
+name through in passing — and swept after `telegram.inbox_keep_days`
+(14 by default), since an agent reads them within minutes and the
+directory would otherwise only grow. Telegram caps what a bot can
+download at 20MB; anything larger is refused before the round trip.
+
 ### Two modes
 
 This whole section is about Claude Code specifically — its hooks are

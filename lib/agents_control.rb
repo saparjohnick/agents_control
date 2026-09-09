@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "io/console"
+require "shellwords"
 
 # The base error is declared before the other files: error classes
 # inherit from it right in a class body (the Telegram client, for
@@ -29,6 +30,7 @@ require_relative "agents_control/transcript"
 require_relative "agents_control/agents/base"
 require_relative "agents_control/agents/claude_code"
 require_relative "agents_control/hooks/server"
+require_relative "agents_control/inbox"
 require_relative "agents_control/passphrase"
 require_relative "agents_control/policy"
 require_relative "agents_control/dispatcher"

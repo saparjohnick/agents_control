@@ -986,7 +986,112 @@ module AgentsControl
           assert_includes @api.last_text, "several tabs"
         end
 
+        # ── files from the phone ─────────────────────────────────────────
+
+        # A path, never the URL. Telegram serves file bytes from
+        # /file/bot<TOKEN>/…, so handing over a link would put the bot
+        # token in the pane, in the agent's context, and in the shell
+        # history — and a leaked token is RCE on this machine.
+        def test_a_file_is_handed_over_as_a_path_never_a_url
+          _executor, router = shell_tab(inbox: FakeInbox.new("/tmp/inbox/notes.txt"))
+
+          router.handle(with_document("notes.txt", chat_id: OWNER))
+
+          refute_includes @api.last_text, "api.telegram.org"
+          refute_includes @api.last_text, "http"
+          assert_includes unescape_markdown(@api.last_text), "/tmp/inbox/notes.txt"
+        end
+
+        # "quarterly report.csv" is an entirely ordinary name, and
+        # unescaped it reaches the shell as two arguments.
+        def test_a_path_with_a_space_is_escaped_before_it_is_typed
+          executor, router = shell_tab(inbox: FakeInbox.new("/tmp/inbox/quarterly report.csv"))
+          number = tab_number(router)
+
+          router.handle(with_document("r.csv", caption: "/run #{number} read", chat_id: OWNER))
+
+          assert_includes typed(executor), "quarterly\\ report.csv"
+        end
+
+        def test_a_captioned_file_goes_to_the_named_tab
+          executor, router = shell_tab(inbox: FakeInbox.new("/tmp/inbox/log.txt"))
+          number = tab_number(router)
+
+          router.handle(with_document("log.txt", caption: "/run #{number} read this", chat_id: OWNER))
+
+          typed = executor.calls.flat_map { |call| call[:argv] }.join(" ")
+
+          assert_includes typed, "read this /tmp/inbox/log.txt"
+        end
+
+        # Replying to a session's own message is the natural way to say
+        # "this one" while talking to it.
+        def test_a_file_replying_to_a_session_goes_to_that_session
+          executor, router = shell_tab(inbox: FakeInbox.new("/tmp/inbox/shot.png"))
+          number = tab_number(router)
+          router.handle(incoming("/screen #{number}", chat_id: OWNER))
+
+          router.handle(with_document("shot.png", reply_to: @api.sent.size, chat_id: OWNER))
+
+          typed = executor.calls.flat_map { |call| call[:argv] }.join(" ")
+
+          assert_includes typed, "/tmp/inbox/shot.png"
+        end
+
+        # Guessing a target for a file is how it gets pasted into the
+        # wrong project. With nothing to go on, hand back the path.
+        def test_a_file_with_no_target_is_only_saved
+          executor, router = shell_tab(inbox: FakeInbox.new("/tmp/inbox/notes.txt"))
+
+          router.handle(with_document("notes.txt", chat_id: OWNER))
+
+          refute_includes typed(executor), "rm -rf"
+          assert_includes @api.last_text, "Saved"
+        end
+
+        def test_a_photo_is_taken_the_same_way
+          _executor, router = shell_tab(inbox: FakeInbox.new("/tmp/inbox/photo.jpg"))
+
+          router.handle({ "message" => { "chat" => { "id" => OWNER }, "message_id" => 1,
+                                          "photo" => [{ "file_id" => "small" }, { "file_id" => "large" }] } })
+
+          assert_includes unescape_markdown(@api.last_text), "/tmp/inbox/photo.jpg"
+        end
+
+        def test_a_file_too_large_is_explained_not_swallowed
+          _executor, router = shell_tab(inbox: FailingInbox.new(Inbox::TooLarge.new("31.0MB is over the 20.0MB limit")))
+
+          router.handle(with_document("huge.bin", chat_id: OWNER))
+
+          assert_includes @api.last_text, "20"
+        end
+
+        # A stranger's file must not reach the disk at all — the
+        # allowlist is checked before anything is parsed.
+        def test_a_stranger_cannot_send_a_file
+          inbox = FakeInbox.new("/tmp/inbox/evil.sh")
+          _executor, router = shell_tab(inbox: inbox)
+
+          router.handle(with_document("evil.sh", chat_id: STRANGER))
+
+          assert_equal 0, inbox.fetches
+          assert_empty @api.sent
+        end
+
         # ── the guard holds on every path into a pane ────────────────────
+
+        # The gate is worth exactly as much as its least guarded path.
+        # A caption is a way of saying /run, so it has to be one.
+        def test_a_captioned_file_cannot_carry_a_destructive_command_past_the_guard
+          executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"),
+                                       inbox: FakeInbox.new("/tmp/inbox/x.png"))
+          number = tab_number(router)
+
+          router.handle(with_document("x.png", caption: "/run #{number} rm -rf ~ #", chat_id: OWNER))
+
+          refute_includes typed(executor), "rm -rf"
+          assert_includes @api.last_text, "passphrase"
+        end
 
         # Replying to a session's message types straight into it — the
         # same capability as /run, so the same gate.
@@ -1259,6 +1364,34 @@ module AgentsControl
         end
 
         private
+        class FakeInbox
+          attr_reader :fetches
+
+          def initialize(path)
+            @path = path
+            @fetches = 0
+          end
+
+          def fetch(_attachment)
+            @fetches += 1
+            @path
+          end
+        end
+
+        class FailingInbox
+          def initialize(error) = @error = error
+          def fetch(_attachment) = raise(@error)
+        end
+
+        def with_document(name, caption: nil, reply_to: nil, chat_id:)
+          message = { "chat" => { "id" => chat_id }, "message_id" => 900,
+                      "document" => { "file_id" => "abc", "file_name" => name, "file_size" => 2048 } }
+          message["caption"] = caption if caption
+          message["reply_to_message"] = { "message_id" => reply_to } if reply_to
+
+          { "message" => message }
+        end
+
         class FakePassphrase
           def initialize(secret) = @secret = secret
           def configured? = !@secret.nil?
@@ -1339,23 +1472,24 @@ module AgentsControl
 
         # A plain shell tab whose screen changes once something is typed
         # into it — the setup the /run tests share.
-        def shell_tab(config: @config, passphrase: nil)
+        def shell_tab(config: @config, passphrase: nil, inbox: nil)
           executor = FakeExecutor.new(
             "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
             Fixtures::MOBILE_APP_ID => ["mobile-app $ ", "mobile-app $ \ndone"],
             "osascript" => Fixtures::ITERM
           )
 
-          [executor, build_router(config: config, executor: executor, passphrase: passphrase)]
+          [executor, build_router(config: config, executor: executor, passphrase: passphrase, inbox: inbox)]
         end
 
-        def build_router(config: @config, store: @store, executor: @executor, passphrase: nil)
+        def build_router(config: @config, store: @store, executor: @executor, passphrase: nil, inbox: nil)
           Router.new(
             api: @api,
             registry: Registry.new(executor: executor),
             store: store,
             config: config,
-            passphrase: passphrase || FakePassphrase.new(nil)
+            passphrase: passphrase || FakePassphrase.new(nil),
+            inbox: inbox
           )
         end
 
