@@ -89,6 +89,14 @@ agents_control           # after that, just open the console
 The wizard catches your `chat_id` from your own message and adds it to
 the allowed list — no need to type in a long number by hand.
 
+At the end it offers to set a **passphrase for destructive commands**.
+A few commands are held back when they arrive from Telegram — `rm -rf ~`,
+`mkfs`, `dd` writing to a raw device, a fork bomb. With a passphrase set
+you're asked to type it before one of those is sent; without one they
+ask for a tap on a button instead. It's optional and skippable, and
+`agents_control passphrase set` adds one later. See
+[Destructive commands ask first](#destructive-commands-ask-first).
+
 Bot commands:
 
 | Command | What it does |
@@ -317,6 +325,66 @@ This tool lets you run commands on your machine from Telegram. That comes with s
   knows the service name can read the token.
 - Auto-replying "continue" is on by default; automatic tool approval is
   off. These are separate settings on purpose.
+
+### Destructive commands ask first
+
+A few commands are held back when they arrive from Telegram: a
+recursive force delete aimed at `/` or `$HOME`, a fork bomb, `mkfs`,
+`dd` writing to a raw device. Each comes back saying what it actually
+does — "this recursively deletes `~` — there is no undo" — rather than
+which rule caught it. `rm -rf /tmp/build` goes straight through, as it
+should: the list is a seatbelt for a thumb on the wrong line in a tab
+listing, not a policy engine, and it stays short enough to hold in
+your head.
+
+By default that's a confirmation button, and the first times one of
+these turns up the bot offers a passphrase alongside it — that's the
+one moment the reason for it is on screen. **Don't ask again** makes
+the refusal stick; `/settings` keeps the offer reachable either way.
+The bot also says so once, on the first daemon start with no
+passphrase set, because someone who never types a destructive command
+themselves would otherwise never learn the option exists — and the
+first one that does turn up might not be theirs.
+
+A passphrase can be set from the chat itself (two entries, both
+deleted) or with `agents_control passphrase set` at the machine. Set
+from the chat, it guards against whoever gets to that chat *later*,
+not whoever has it right now — the bot says so when it saves. That's
+the honest trade: the alternative is that most people never set one,
+since you only think about this while away from the keyboard.
+
+Set a passphrase — during `agents_control setup`, from the bot, or any
+time after — and the button becomes a question instead:
+
+```sh
+agents_control passphrase set      # entered without echo, stored in the Keychain
+```
+
+```
+you  › /run 3 rm -rf ~
+
+bot  › this recursively deletes ~ — there is no undo
+
+         rm -rf ~
+
+       Reply to this message with the passphrase to send it to
+       mobile-app. Anything else cancels.
+
+you  › ················            ← deleted from the chat once read
+```
+
+A tap answers "did you mean this?" — which covers the wrong tab
+number. A passphrase answers "are you you?", which is the other half:
+an unlocked phone in someone else's hand taps just as well as its
+owner does. It replaces the button rather than joining it — two steps
+for one decision is how people learn to hurry through both — and the
+message carrying it is deleted from the chat the moment it's read,
+right or wrong, since a chat history syncs to every device the account
+is signed in on.
+
+The passphrase is stored derived (PBKDF2-HMAC-SHA256, salted) next to
+the bot token, and is never accepted as a command-line argument.
+`agents_control passphrase clear` goes back to the button.
 
 ## Development
 

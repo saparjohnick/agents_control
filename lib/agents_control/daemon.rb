@@ -237,6 +237,8 @@ module AgentsControl
         config: @config, pending: pending, logger: @logger
       )
 
+      router.announce(@config.get("telegram.allowed_chat_ids", []))
+
       @bot = Channels::Telegram::Bot.new(api: api, router: router, store: @store,
                                          config: @config, logger: @logger).start
     end

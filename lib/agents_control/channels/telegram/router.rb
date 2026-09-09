@@ -10,6 +10,11 @@ module AgentsControl
       class Router
         MAX_MESSAGE = Chunker::MAX_MESSAGE
 
+        # Long enough to walk somewhere quieter and type carefully,
+        # short enough that a challenge left unanswered doesn't sit
+        # around waiting to be replied to by accident tomorrow.
+        CHALLENGE_TTL = 300
+
         # Commands in these tabs go to a remote server, not the laptop —
         # they get a separate confirmation.
         REMOTE_COMMANDS = %w[ssh mosh].freeze
@@ -47,7 +52,7 @@ module AgentsControl
         HELP = (["Commands:", ""] +
                 COMMANDS.map { |name, text, hint| "/#{name}#{hint ? " #{hint}" : ''} — #{text}" }).join("\n")
 
-        def initialize(api:, registry:, store:, config:, keyboards: nil, pending: nil, logger: nil)
+        def initialize(api:, registry:, store:, config:, keyboards: nil, pending: nil, logger: nil, passphrase: nil)
           @api = api
           @registry = registry
           @store = store
@@ -55,6 +60,17 @@ module AgentsControl
           @keyboards = keyboards || Keyboards.new(store: store)
           @pending = pending
           @logger = logger
+          @passphrase = passphrase || Passphrase.new
+        end
+
+        # Called once by the daemon on start; everything else here is
+        # driven by an incoming update.
+        def announce(chat_ids)
+          chat_ids.each { |chat_id| announce_passphrase(chat_id) }
+        rescue StandardError => e
+          # A notice that couldn't be sent is not a reason for the
+          # daemon to fail to come up.
+          log("couldn't send the passphrase notice: #{e.class}")
         end
 
         def handle(update)
@@ -85,7 +101,23 @@ module AgentsControl
           text = message["text"].to_s.strip
 
           replied = message["reply_to_message"]
-          return answer_by_reply(chat_id, replied, text) if replied && !text.empty?
+          if replied && !text.empty?
+            # Checked before answer_by_reply, which would otherwise take
+            # the passphrase for something to type into a pane — and a
+            # passphrase typed into a terminal is a passphrase in the
+            # shell history.
+            challenge = @store.take(challenge_key(chat_id, replied["message_id"]))
+            return unlock(chat_id, challenge, text, message["message_id"]) if challenge
+
+            # Scoped to a reply on the wizard's own message rather than
+            # "whatever comes next": otherwise a half-finished wizard
+            # swallows the next thing typed, which could be a /run or an
+            # answer an agent is waiting on.
+            step = @store.take(wizard_key(chat_id, replied["message_id"]))
+            return wizard_entry(chat_id, step, text, message["message_id"]) if step
+
+            return answer_by_reply(chat_id, replied, text)
+          end
 
           return compose_answer(chat_id, text) if composing?(chat_id) && !text.start_with?("/")
 
@@ -219,6 +251,7 @@ module AgentsControl
             # reasoning as replying to an agent's own question
             # (type_into_session).
             next execute(chat_id, session, command, show_result: false) if session.agent?
+
             next confirm_interactive(chat_id, session, command) if interactive?(session)
 
             # One capture serves two purposes: it's checked for a
@@ -270,6 +303,156 @@ module AgentsControl
               markup: markup)
         end
 
+        # A tap answers "did you mean this?", which covers the thumb on
+        # the wrong line. A passphrase answers "are you you?", which is
+        # the other half — an unlocked phone in someone else's hand
+        # taps just as well as its owner does. When one is set it
+        # replaces the button for these commands rather than joining
+        # it: typing a passphrase is already a deliberate act, and two
+        # steps for one decision is how people learn to hurry through
+        # both.
+        #
+        # No passphrase set and it's the button, exactly as before.
+        def confirm_policy(chat_id, session, command, reason)
+          return challenge(chat_id, session, command, reason) if passphrase.configured?
+          return confirm_tap(chat_id, session, command, reason) unless offer_passphrase?
+
+          offer(chat_id, session, command, reason)
+        end
+
+        def offer_passphrase? = @config.get("telegram.offer_passphrase", true)
+
+        # Shown instead of a bare button the first times a destructive
+        # command turns up with no passphrase set. It still runs on one
+        # tap — refusing to would break the tool — but the offer sits
+        # next to it, at the one moment the reason for it is on screen.
+        #
+        # "Don't ask again" makes the refusal stick. Without that this
+        # is a wizard that greets someone at every `rm -rf ~` forever,
+        # which is precisely the nagging it's supposed to avoid.
+        def offer(chat_id, session, command, reason)
+          run_key = @store.put({ "action" => "run", "session_id" => session.id, "text" => command,
+                                 "vetted" => true }, ttl: 300)
+          set_key = @store.put({ "action" => "passphrase_wizard" }, ttl: 300)
+          hush_key = @store.put({ "action" => "passphrase_never" }, ttl: 300)
+
+          markup = { inline_keyboard: [
+            [{ text: "⚠️ Run anyway", callback_data: run_key }],
+            [{ text: "🔐 Set a passphrase", callback_data: set_key }],
+            [{ text: "Don't ask again", callback_data: hush_key }]
+          ] }
+
+          say(chat_id, "#{reason}\n\n`#{command}`\n\nNothing was sent. Commands like this ask for a " \
+                       "passphrase when one is set — right now there isn't one, so they ask for a tap " \
+                       "instead, and a tap is something anyone holding this phone can do.",
+              markup: markup)
+        end
+
+        def confirm_tap(chat_id, session, command, reason)
+          key = @store.put({ "action" => "run", "session_id" => session.id, "text" => command,
+                             "vetted" => true }, ttl: 300)
+
+          markup = { inline_keyboard: [[
+            { text: "⚠️ Run anyway", callback_data: key },
+            { text: "cancel", callback_data: @store.put({ "action" => "cancel" }, ttl: 300) }
+          ]] }
+
+          say(chat_id, "#{reason} — it won't go to #{session.label} without a confirmation:\n\n`#{command}`",
+              markup: markup)
+        end
+
+        def challenge(chat_id, session, command, reason)
+          sent = say(chat_id, "#{reason}\n\n`#{command}`\n\nReply to this message with the passphrase to " \
+                              "send it to #{session.label}. Anything else cancels.")
+          return unless sent
+
+          @store.put({ "session_id" => session.id, "text" => command },
+                     ttl: CHALLENGE_TTL, key: challenge_key(chat_id, sent["message_id"]))
+        end
+
+        def challenge_key(chat_id, message_id) = "unlock:#{chat_id}:#{message_id}"
+
+        def wizard_key(chat_id, message_id) = "setpass:#{chat_id}:#{message_id}"
+
+        def start_wizard(chat_id)
+          return say(chat_id, "A passphrase is already set.") if passphrase.configured?
+
+          ask_entry(chat_id, "Reply to this message with a passphrase — at least " \
+                             "#{Passphrase::MINIMUM} characters. It's deleted from the chat the moment " \
+                             "it's read, and you'll be asked to type it once more.")
+        end
+
+        def ask_entry(chat_id, prompt, sealed: nil)
+          sent = say(chat_id, prompt)
+          return unless sent
+
+          @store.put({ "sealed" => sealed }, ttl: CHALLENGE_TTL,
+                                             key: wizard_key(chat_id, sent["message_id"]))
+        end
+
+        # Both entries are deleted, and the first never waits as plain
+        # text: what's held between the two prompts is a derivation of
+        # it, which is enough to tell whether the second matches and no
+        # use for anything else.
+        def wizard_entry(chat_id, step, entry, message_id)
+          @api.delete_message(chat_id: chat_id, message_id: message_id)
+
+          return wizard_confirm(chat_id, step["sealed"], entry) if step["sealed"]
+          return ask_entry(chat_id, "That's under #{Passphrase::MINIMUM} characters. Reply with a longer one.") \
+            if entry.length < Passphrase::MINIMUM
+
+          ask_entry(chat_id, "Once more, to be sure.", sealed: Passphrase.sealed(entry))
+        end
+
+        def wizard_confirm(chat_id, sealed, entry)
+          unless Passphrase.sealed_matches?(sealed, entry)
+            return ask_entry(chat_id, "Those two didn't match. Reply with a passphrase to start over.")
+          end
+
+          save_passphrase(chat_id, entry)
+        end
+
+        # Writing to the Keychain from a background daemon isn't the
+        # same as writing from a terminal: a locked keychain can put the
+        # `security` call in front of an authorization dialog nobody is
+        # looking at, and it fails on Executor's timeout rather than
+        # succeeding. Saying so beats a silent nothing.
+        def save_passphrase(chat_id, entry)
+          passphrase.set(entry)
+          say(chat_id, "Passphrase set. Destructive commands will ask for it from now on — " \
+                       "send that command again if you still want it.\n\nSet from this chat, so it " \
+                       "guards against whoever gets to it later, not whoever has it now. " \
+                       "`agents_control passphrase set` at the machine if that matters.")
+        rescue Passphrase::TooShort => e
+          ask_entry(chat_id, "#{e.message.capitalize}. Reply with a longer one.")
+        rescue StandardError => e
+          log("couldn't save passphrase: #{e.class}")
+          say(chat_id, "Couldn't save it: #{@api.redact(e.message)}\n\n" \
+                       "Set it at the machine instead: `agents_control passphrase set`")
+        end
+
+        # The passphrase is deleted from the chat either way, and before
+        # anything else happens: whether it was right has no bearing on
+        # it not belonging in a message history that syncs to every
+        # device the account is signed in on.
+        def unlock(chat_id, challenge, attempt, message_id)
+          @api.delete_message(chat_id: chat_id, message_id: message_id)
+
+          unless passphrase.matches?(attempt)
+            log("unlock refused: session=#{challenge['session_id']}")
+            return say(chat_id, "That isn't the passphrase — nothing was sent. Send the command " \
+                                "again to retry, or run `agents_control passphrase clear` at the " \
+                                "machine if it's lost.")
+          end
+
+          session = @registry.refresh.find(challenge["session_id"])
+          return say(chat_id, "That session is already closed.") unless session
+
+          execute(chat_id, session, challenge["text"], show_result: !session.agent?, vetted: true)
+        end
+
+        def passphrase = @passphrase
+
         def confirm_interactive(chat_id, session, command)
           key = @store.put({ "action" => "run", "session_id" => session.id, "text" => command },
                            ttl: 300)
@@ -301,7 +484,29 @@ module AgentsControl
 
         def run_result_lines = @config.get("terminal.run_result_lines", 200)
 
-        def execute(chat_id, session, command, show_result: false, before: nil)
+        # Every way text reaches a pane comes through here — /run, a
+        # reply, a file's caption, a confirmation that was taken — so
+        # this is where the guard belongs. It used to sit in `run`
+        # alone, which made it worth exactly as much as the least
+        # guarded of the other five callers: a caption reading
+        # "/run 3 rm -rf ~ #" went straight through.
+        #
+        # `vetted` is set only by the confirmations that already asked
+        # about *this* command. A tab running ssh gets its own
+        # confirmation first, and that answered a different question —
+        # "this goes to another machine", not "this destroys one" — so
+        # it doesn't count, and the guard still applies after it.
+        #
+        # Against an agent the text is a prompt rather than a command
+        # line: "look at how .env is loaded" is an ordinary thing to
+        # ask, and what the agent then tries to run is the hook path's
+        # business (Dispatcher#forbidden?).
+        def execute(chat_id, session, command, show_result: false, before: nil, vetted: false)
+          unless vetted || session.agent?
+            verdict = Policy.check(command)
+            return confirm_policy(chat_id, session, command, verdict.reason) if verdict.confirm?
+          end
+
           backend = @registry.backend_for(session)
           before ||= capture_screen(session, lines: run_result_lines) if show_result
 
@@ -435,7 +640,7 @@ module AgentsControl
         end
 
         def settings_menu
-          @settings_menu ||= SettingsMenu.new(store: @store, config: @config)
+          @settings_menu ||= SettingsMenu.new(store: @store, config: @config, passphrase: passphrase)
         end
 
         def show_settings(chat_id)
@@ -477,7 +682,30 @@ module AgentsControl
           say(chat_id, "Tabs: #{sessions.size}\nAgents: #{sessions.count(&:agent?)}\n" \
                        "Backends: #{backends.empty? ? 'none' : backends}\n" \
                        "Mode: #{@config.get('answers.away', false) ? '🚶 away' : '🪑 present'}\n" \
-                       "Waiting for a reply: #{@pending ? @pending.size : 0}")
+                       "Waiting for a reply: #{@pending ? @pending.size : 0}\n" \
+                       "Destructive commands: #{passphrase.configured? ? '🔐 passphrase' : 'a tap'}")
+        end
+
+        # One message, once, and only where there's something to say.
+        # Sent from the daemon on start rather than pushed at a moment
+        # someone is deciding something else — this bot carries real
+        # interruptions (an agent stopped, a permission is needed), and
+        # spending that attention on a setting nobody has chosen yet is
+        # how people learn to dismiss the ones that matter.
+        def announce_passphrase(chat_id)
+          return if passphrase.configured? || !offer_passphrase?
+          return if @config.get("telegram.passphrase_notice_sent", false)
+
+          key = @store.put({ "action" => "passphrase_wizard" }, ttl: 86_400)
+          hush = @store.put({ "action" => "passphrase_never" }, ttl: 86_400)
+
+          say(chat_id, "🔐 No passphrase set\n\nDestructive commands from this chat — `rm -rf ~`, " \
+                       "`mkfs`, `dd` to a device, a fork bomb — ask for a tap on a button. A tap is " \
+                       "something anyone holding this phone can do.",
+              markup: { inline_keyboard: [[{ text: "🔐 Set a passphrase", callback_data: key },
+                                            { text: "Not now", callback_data: hush }]] })
+
+          @config.set("telegram.passphrase_notice_sent", true).save
         end
 
         def handle_callback(callback)
@@ -508,6 +736,8 @@ module AgentsControl
           when "transcript" then show_transcript(chat_id, payload)
           when "setting" then change_setting(chat_id, payload)
           when "menu_choice" then choose_menu_option(chat_id, payload)
+          when "passphrase_wizard" then start_wizard(chat_id)
+          when "passphrase_never" then stop_offering(chat_id)
           when "ask_question_choice" then answer_ask_user_question(chat_id, payload)
           else act_on_session(chat_id, payload)
           end
@@ -522,6 +752,12 @@ module AgentsControl
                   end
 
           deliver(chat_id, payload["question_id"], reply)
+        end
+
+        def stop_offering(chat_id)
+          @config.set("telegram.offer_passphrase", false).save
+          say(chat_id, "Won't bring it up again. Destructive commands will keep asking for a tap, and " \
+                       "`/settings` can still turn a passphrase on later.")
         end
 
         def start_compose(chat_id, payload)
@@ -574,7 +810,8 @@ module AgentsControl
           case payload["action"]
           when "focus" then focus_session(chat_id, session)
           when "screen" then show_screen(chat_id, session)
-          when "run" then execute(chat_id, session, payload["text"], show_result: !session.agent?)
+          when "run" then execute(chat_id, session, payload["text"], show_result: !session.agent?,
+                                  vetted: payload["vetted"] ? true : false)
           when "close_confirm" then say(chat_id, "Close #{session.label}?",
                                         markup: @keyboards.confirm("close", session))
           when "close" then close_session(chat_id, session)

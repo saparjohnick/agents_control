@@ -25,8 +25,12 @@ module AgentsControl
       @providers = providers || default_providers
     end
 
-    def get(key)
+    # skip names a provider class to read past — for a secret that has
+    # no business coming from one of them (see Passphrase).
+    def get(key, skip: nil)
       readable.each do |provider|
+        next if skip && provider.is_a?(skip)
+
         value = provider.get(key.to_s)
         return value if value && !value.empty?
       end

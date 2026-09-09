@@ -141,12 +141,13 @@ module AgentsControl
 
   # A Telegram client with no Telegram: remembers what was sent.
   class FakeApi
-    attr_reader :sent, :answered
+    attr_reader :sent, :answered, :deleted
     attr_accessor :fail_markdown_once
 
     def initialize
       @sent = []
       @answered = []
+      @deleted = []
       @fail_markdown_once = false
     end
 
@@ -159,6 +160,11 @@ module AgentsControl
 
       @sent << { chat_id: chat_id, text: text, markup: reply_markup, parse_mode: parse_mode }
       { "message_id" => @sent.size }
+    end
+
+    def delete_message(chat_id:, message_id:)
+      @deleted << { chat_id: chat_id, message_id: message_id }
+      true
     end
 
     def answer_callback_query(id, text: nil, show_alert: false)

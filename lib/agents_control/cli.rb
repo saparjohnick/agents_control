@@ -52,6 +52,11 @@ module AgentsControl
       The token is entered without echo and saved to the Keychain or
       libsecret. It's deliberately never accepted as a command-line
       argument: it would leak into `ps` and shell history.
+
+      Finally, offers to set a passphrase for destructive commands
+      (rm -rf ~, mkfs, dd to a device, a fork bomb) arriving from
+      Telegram. Optional — without one they ask for a tap on a button
+      instead.
     TEXT
     def setup
       token = ask_token
@@ -65,7 +70,9 @@ module AgentsControl
       say("Token saved: #{secrets.target.name}", :green)
       publish_commands(api)
 
-      capture_chat_id(api, me)
+      return unless capture_chat_id(api, me)
+
+      offer_passphrase
     end
 
     desc "daemon", "Run the daemon: agent hooks plus Telegram"
@@ -144,10 +151,104 @@ module AgentsControl
       end
     end
 
+    desc "passphrase SUBCOMMAND", "Passphrase for destructive commands (set/clear/status)"
+    long_desc <<~TEXT
+      A handful of commands are held back when they arrive from
+      Telegram — a recursive force delete aimed at / or $HOME, a fork
+      bomb, mkfs, dd to a raw device. Without a passphrase they come
+      back as a confirmation button. With one, they come back asking
+      for it, so an unlocked phone in someone else's hand can't tap
+      its way past them.
+
+      Entered without echo and stored derived (PBKDF2) in the Keychain
+      or libsecret. Deliberately never a command-line argument: it
+      would leak into `ps` and shell history.
+    TEXT
+    def passphrase(subcommand = "status")
+      store = Passphrase.new(secrets: secrets)
+
+      case subcommand
+      when "set" then set_passphrase(store)
+      when "clear" then clear_passphrase(store)
+      when "status" then say(store.configured? ? "Passphrase is set." : "No passphrase — a button is used instead.")
+      else say("Usage: agents_control passphrase set|clear|status", :yellow)
+      end
+    end
+
     desc "version", "Version"
     def version = say(AgentsControl::VERSION)
 
     private
+
+    # Offered at the end of setup rather than left to be found later:
+    # finishing setup is the moment the bot can start typing into this
+    # machine, and the only moment its owner is guaranteed to be
+    # reading. Skippable — a setup that can't be finished without
+    # inventing a passphrase on the spot is a setup people abandon.
+    def offer_passphrase
+      return unless $stdin.tty?
+
+      store = Passphrase.new(secrets: secrets)
+      return say("A passphrase is already set. Change it with: agents_control passphrase set") if store.configured?
+
+      say("")
+      say("Optional: a passphrase for destructive commands", :yellow)
+      say("")
+      say("A few commands are held back when they arrive from Telegram —")
+      say("`rm -rf ~`, `mkfs`, `dd` writing to a device, a fork bomb. Set a")
+      say("passphrase and you'll be asked to type it before one of those is")
+      say("sent; leave this blank and they ask for a tap on a button instead.")
+      say("")
+      say("The difference shows up when it isn't you holding the phone: a")
+      say("button taps just as easily for whoever picked it up. Typing a")
+      say("passphrase doesn't.")
+      say("")
+      say("Blank to skip — you can set one any time with:", :white)
+      say("  agents_control passphrase set", :white)
+      say("")
+
+      set_passphrase(store, skippable: true)
+    end
+
+    def set_passphrase(store, skippable: false)
+      value = ask_passphrase("Passphrase: ")
+      return skipped(skippable) if value.empty?
+
+      return say("They don't match — left unchanged.", :yellow) unless value == ask_passphrase("Again: ")
+
+      store.set(value)
+      say("Passphrase saved: #{secrets.target.name}", :green)
+    rescue Passphrase::TooShort => e
+      say("#{e.message.capitalize} — left unchanged.", :yellow)
+    rescue Passphrase::NotSaved, AgentsControl::Error => e
+      say("Couldn't save it: #{e.message}", :red)
+      say("Check `agents_control doctor` — the secret store may be locked or missing.", :white)
+    end
+
+    def skipped(skippable)
+      return say("Nothing entered — left unchanged.", :yellow) unless skippable
+
+      say("Skipped — destructive commands will ask for a tap.", :white)
+    end
+
+    def clear_passphrase(store)
+      return say("There was no passphrase set.", :yellow) unless store.configured?
+
+      store.clear
+      say("Passphrase removed — destructive commands go back to a confirmation button.", :green)
+    end
+
+    def ask_passphrase(label)
+      return $stdin.gets.to_s.chomp unless $stdin.tty?
+
+      $stderr.print(label)
+      # Same class of failures as the token prompt: ENOTTY, ENODEV, ENXIO.
+      $stdin.noecho(&:gets).to_s.chomp
+    rescue SystemCallError, IOError
+      ""
+    ensure
+      $stderr.puts if $stdin.tty?
+    end
 
     Api = Channels::Telegram::Api
     Router = Channels::Telegram::Router
@@ -268,6 +369,7 @@ module AgentsControl
       return say("Timed out. Run setup again.", :red) unless chat
 
       allow(chat)
+      true
     end
 
     def wait_for_message(api, seconds: 120)

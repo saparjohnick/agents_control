@@ -195,6 +195,47 @@ module AgentsControl
           assert_includes @api.last_text, "Usage"
         end
 
+        # The command check is off unless it's switched on, and off
+        # means the command goes where it always went — no button, no
+        # extra round trip. Someone upgrading for an unrelated fix must
+        # not find /run suddenly asking them things.
+        def test_a_dangerous_command_is_sent_as_before_by_default
+          executor, router = shell_tab
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
+
+          router.handle(incoming("/run #{number} rm -rf /tmp/x", chat_id: OWNER))
+
+          assert executor.called?(Fixtures::MOBILE_APP_ID)
+        end
+
+        # The exception to "off by default": a handful of commands that
+        # destroy a disk or the machine outright are held back with no
+        # setting involved. `rm -rf /tmp/x` above goes straight through;
+        # `rm -rf ~` doesn't, and nobody types it from a phone meaning it.
+        def test_wiping_the_home_directory_is_held_back_without_any_setting
+          executor, router = shell_tab
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "mobile-app")
+
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          refute_includes typed(executor), "rm -rf"
+          assert_includes @api.last_text, "no undo"
+        end
+
+        # The confirmation is a button, not a dead end: the whole point
+        # is that the owner can still say yes from the phone.
+        def test_the_confirmation_can_be_taken_and_the_command_then_runs
+          executor, router = shell_tab
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          router.handle(pressed(@api.sent.last[:markup][:inline_keyboard][0][0][:callback_data], chat_id: OWNER))
+
+          assert executor.called?(Fixtures::MOBILE_APP_ID)
+        end
+
         def test_new_creates_a_tab_in_the_given_directory
           executor = FakeExecutor.new(
             "/tmp/newproj" => "NEW-TAB-ID",
@@ -945,7 +986,307 @@ module AgentsControl
           assert_includes @api.last_text, "several tabs"
         end
 
+        # ── the guard holds on every path into a pane ────────────────────
+
+        # Replying to a session's message types straight into it — the
+        # same capability as /run, so the same gate.
+        def test_a_reply_cannot_carry_a_destructive_command_past_the_guard
+          executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"))
+          number = tab_number(router)
+          router.handle(incoming("/screen #{number}", chat_id: OWNER))
+
+          router.handle(reply_to("rm -rf ~", @api.sent.size, chat_id: OWNER))
+
+          refute_includes typed(executor), "rm -rf"
+          assert_includes @api.last_text, "passphrase"
+        end
+
+        # A tab running ssh got its own confirmation first, and that
+        # answered a different question — "this goes to another
+        # machine", not "this destroys one".
+        def test_a_remote_tab_does_not_escape_the_guard_either
+          executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          refute_includes typed(executor), "rm -rf"
+          assert_includes @api.last_text, "passphrase"
+        end
+
+        # ── offering a passphrase when there is none ─────────────────────
+
+        # It still runs on one tap — refusing would break the tool — but
+        # the offer sits next to it, at the one moment the reason for it
+        # is on screen.
+        def test_a_destructive_command_offers_a_passphrase_alongside_the_button
+          _executor, router = shell_tab
+          number = tab_number(router)
+
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          labels = @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] }
+
+          assert_includes labels, "⚠️ Run anyway"
+          assert_includes labels, "🔐 Set a passphrase"
+          assert_includes labels, "Don't ask again"
+        end
+
+        def test_running_anyway_still_works
+          executor, router = shell_tab
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          router.handle(pressed(button_key(@api.sent.last, "⚠️ Run anyway"), chat_id: OWNER))
+
+          assert executor.called?(Fixtures::MOBILE_APP_ID)
+        end
+
+        # Otherwise this is a wizard that greets someone at every
+        # rm -rf forever — the nagging it exists to avoid.
+        def test_declining_sticks_and_the_plain_button_comes_back
+          _executor, router = shell_tab
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+          router.handle(pressed(button_key(@api.sent.last, "Don't ask again"), chat_id: OWNER))
+
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          labels = @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] }
+
+          refute_includes labels, "🔐 Set a passphrase"
+          assert_includes labels, "⚠️ Run anyway"
+        end
+
+        # ── the two-entry wizard ─────────────────────────────────────────
+
+        def test_the_wizard_asks_twice_and_saves
+          secrets = FakeStore.new
+          _executor, router = shell_tab(passphrase: Passphrase.new(secrets: secrets))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+          router.handle(pressed(button_key(@api.sent.last, "🔐 Set a passphrase"), chat_id: OWNER))
+
+          router.handle(reply_to("open sesame please", @api.sent.size, chat_id: OWNER))
+          assert_includes @api.last_text, "Once more"
+
+          router.handle(reply_to("open sesame please", @api.sent.size, chat_id: OWNER))
+
+          assert Passphrase.new(secrets: secrets).configured?
+          assert_includes @api.last_text, "Passphrase set"
+        end
+
+        # Both entries are typed into a chat that syncs to every device
+        # the account is signed in on.
+        def test_both_entries_are_deleted_from_the_chat
+          _executor, router = shell_tab(passphrase: Passphrase.new(secrets: FakeStore.new))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+          router.handle(pressed(button_key(@api.sent.last, "🔐 Set a passphrase"), chat_id: OWNER))
+          router.handle(reply_to("open sesame please", @api.sent.size, chat_id: OWNER))
+          router.handle(reply_to("open sesame please", @api.sent.size, chat_id: OWNER))
+
+          assert_equal 2, @api.deleted.size
+        end
+
+        def test_two_entries_that_disagree_start_over
+          secrets = FakeStore.new
+          _executor, router = shell_tab(passphrase: Passphrase.new(secrets: secrets))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+          router.handle(pressed(button_key(@api.sent.last, "🔐 Set a passphrase"), chat_id: OWNER))
+          router.handle(reply_to("open sesame please", @api.sent.size, chat_id: OWNER))
+
+          router.handle(reply_to("something entirely else", @api.sent.size, chat_id: OWNER))
+
+          refute Passphrase.new(secrets: secrets).configured?
+          assert_includes @api.last_text, "didn't match"
+        end
+
+        def test_a_short_entry_is_refused_before_the_second_prompt
+          _executor, router = shell_tab(passphrase: Passphrase.new(secrets: FakeStore.new))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+          router.handle(pressed(button_key(@api.sent.last, "🔐 Set a passphrase"), chat_id: OWNER))
+
+          router.handle(reply_to("short", @api.sent.size, chat_id: OWNER))
+
+          assert_includes @api.last_text, "characters"
+          refute_includes @api.last_text, "Once more"
+        end
+
+        # The wizard listens on a reply to its own message, not to
+        # "whatever comes next" — otherwise a half-finished one swallows
+        # a /run, or an answer an agent is waiting on.
+        def test_an_unrelated_message_is_not_taken_as_the_passphrase
+          executor, router = shell_tab(passphrase: Passphrase.new(secrets: FakeStore.new))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+          router.handle(pressed(button_key(@api.sent.last, "🔐 Set a passphrase"), chat_id: OWNER))
+
+          router.handle(incoming("/run #{number} ls -la", chat_id: OWNER))
+
+          assert executor.called?(Fixtures::MOBILE_APP_ID)
+          refute_includes @api.last_text, "Once more"
+        end
+
+        # ── the one-time notice ──────────────────────────────────────────
+
+        def test_the_notice_goes_out_once_and_offers_a_button
+          _executor, router = shell_tab(passphrase: FakePassphrase.new(nil))
+
+          router.announce([OWNER])
+
+          assert_includes @api.last_text, "No passphrase set"
+          assert_includes @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] },
+                          "🔐 Set a passphrase"
+        end
+
+        def test_the_notice_does_not_repeat
+          _executor, router = shell_tab(passphrase: FakePassphrase.new(nil))
+          router.announce([OWNER])
+          sent = @api.sent.size
+
+          router.announce([OWNER])
+
+          assert_equal sent, @api.sent.size
+        end
+
+        def test_no_notice_when_a_passphrase_is_already_set
+          _executor, router = shell_tab(passphrase: FakePassphrase.new("anything"))
+
+          router.announce([OWNER])
+
+          assert_empty @api.sent
+        end
+
+        def test_no_notice_once_it_has_been_declined
+          config = Config.new({ "telegram" => { "allowed_chat_ids" => [OWNER], "offer_passphrase" => false } })
+          _executor, router = shell_tab(config: config, passphrase: FakePassphrase.new(nil))
+
+          router.announce([OWNER])
+
+          assert_empty @api.sent
+        end
+
+        # ── passphrase on destructive commands ───────────────────────────
+
+        # With no passphrase set, nothing about this changes: the same
+        # button as before, one tap, done.
+        def test_without_a_passphrase_a_destructive_command_still_gets_a_button
+          executor, router = shell_tab
+          number = tab_number(router)
+
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          refute_includes typed(executor), "rm -rf"
+          refute_nil @api.sent.last[:markup]
+        end
+
+        # With one set, the button is replaced by a question. A tap is
+        # something an unlocked phone in someone else's hand can do;
+        # typing the passphrase isn't.
+        def test_a_passphrase_replaces_the_button
+          _executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"))
+          number = tab_number(router)
+
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          assert_nil @api.sent.last[:markup]
+          assert_includes @api.last_text, "passphrase"
+        end
+
+        def test_the_right_passphrase_runs_the_command
+          executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+          challenge = @api.sent.last
+
+          router.handle(reply_to("open sesame please", challenge_id, chat_id: OWNER))
+
+          assert executor.called?(Fixtures::MOBILE_APP_ID)
+        end
+
+        def test_a_wrong_passphrase_runs_nothing
+          executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          router.handle(reply_to("guessing", challenge_id, chat_id: OWNER))
+
+          refute_includes typed(executor), "rm -rf"
+          assert_includes @api.last_text, "isn't the passphrase"
+        end
+
+        # A passphrase in a chat history syncs to every device the
+        # account is signed in on. Whether it was right has no bearing
+        # on it not belonging there.
+        def test_the_passphrase_message_is_deleted_either_way
+          _executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          router.handle(reply_to("guessing", challenge_id, chat_id: OWNER))
+
+          refute_empty @api.deleted
+        end
+
+        # Without this the passphrase would fall through to the normal
+        # reply path and be typed into the pane — straight into the
+        # shell history.
+        def test_the_passphrase_is_never_typed_into_the_pane
+          executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+
+          router.handle(reply_to("open sesame please", challenge_id, chat_id: OWNER))
+
+          typed = executor.calls.flat_map { |call| call[:argv] }.join(" ")
+
+          refute_includes typed, "open sesame please"
+        end
+
+        # One challenge, one answer: a wrong guess doesn't leave the
+        # command sitting there to be guessed at again.
+        def test_a_challenge_cannot_be_answered_twice
+          executor, router = shell_tab(passphrase: FakePassphrase.new("open sesame please"))
+          number = tab_number(router)
+          router.handle(incoming("/run #{number} rm -rf ~", chat_id: OWNER))
+          router.handle(reply_to("guessing", challenge_id, chat_id: OWNER))
+
+          router.handle(reply_to("open sesame please", challenge_id, chat_id: OWNER))
+
+          refute_includes typed(executor), "rm -rf"
+        end
+
         private
+        class FakePassphrase
+          def initialize(secret) = @secret = secret
+          def configured? = !@secret.nil?
+          def matches?(attempt) = attempt == @secret
+        end
+
+        # A Secrets stand-in, so the real Passphrase can be exercised
+        # end to end without the Keychain.
+        class FakeStore
+          def initialize = @stored = {}
+          def get(key, skip: nil) = @stored[key]
+          def set(key, value) = @stored[key] = value
+          def delete(key) = @stored.delete(key)
+        end
+
+        def challenge_id = @api.sent.size
+
+        # What actually reached the pane. `called?` can't tell a send
+        # from the screen read that precedes it.
+        def typed(executor)
+          executor.calls.flat_map { |call| call[:argv] }.join(" ")
+        end
+
+        def tab_number(router)
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          number_of_in(@api.last_text, "mobile-app")
+        end
+
 
         class FakeMultiRegistry
           def initialize(sessions, backend)
@@ -996,12 +1337,25 @@ module AgentsControl
                      })
         end
 
-        def build_router(config: @config, store: @store, executor: @executor)
+        # A plain shell tab whose screen changes once something is typed
+        # into it — the setup the /run tests share.
+        def shell_tab(config: @config, passphrase: nil)
+          executor = FakeExecutor.new(
+            "-o" => Fixtures::PS, "-Fn" => Fixtures::LSOF,
+            Fixtures::MOBILE_APP_ID => ["mobile-app $ ", "mobile-app $ \ndone"],
+            "osascript" => Fixtures::ITERM
+          )
+
+          [executor, build_router(config: config, executor: executor, passphrase: passphrase)]
+        end
+
+        def build_router(config: @config, store: @store, executor: @executor, passphrase: nil)
           Router.new(
             api: @api,
             registry: Registry.new(executor: executor),
             store: store,
-            config: config
+            config: config,
+            passphrase: passphrase || FakePassphrase.new(nil)
           )
         end
 

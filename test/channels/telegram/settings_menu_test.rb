@@ -11,10 +11,38 @@ module AgentsControl
           @dir = Dir.mktmpdir
           @store = Store.new(path: File.join(@dir, "store.json"))
           @config = Config.new({}, path: File.join(@dir, "config.yml"))
-          @menu = SettingsMenu.new(store: @store, config: @config)
+          @menu = SettingsMenu.new(store: @store, config: @config, passphrase: FakePassphrase.new(false))
         end
 
         def teardown = FileUtils.remove_entry(@dir)
+
+        # The menu is the one place the offer lives permanently, so a
+        # "don't ask again" elsewhere doesn't put it out of reach.
+        def test_says_how_destructive_commands_are_guarded
+          assert_includes @menu.text, "Destructive commands: a tap"
+
+          set = SettingsMenu.new(store: @store, config: @config, passphrase: FakePassphrase.new(true))
+
+          assert_includes set.text, "Destructive commands: 🔐 passphrase"
+        end
+
+        def test_offers_to_set_one_while_there_is_none
+          labels = @menu.markup[:inline_keyboard].flatten.map { |button| button[:text] }
+
+          assert_includes labels, "🔐 Set a passphrase"
+        end
+
+        def test_does_not_offer_once_one_is_set
+          menu = SettingsMenu.new(store: @store, config: @config, passphrase: FakePassphrase.new(true))
+          labels = menu.markup[:inline_keyboard].flatten.map { |button| button[:text] }
+
+          refute_includes labels, "🔐 Set a passphrase"
+        end
+
+        class FakePassphrase
+          def initialize(configured) = @configured = configured
+          def configured? = @configured
+        end
 
         def test_shows_current_values
           text = @menu.text

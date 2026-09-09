@@ -27,7 +27,7 @@ module AgentsControl
 
     CHECKS = %i[
       ruby_check terminal_check automation_check agent_binary_check
-      token_check chats_check bot_check daemon_check hooks_check
+      token_check chats_check passphrase_check bot_check daemon_check hooks_check
       anchors_check wake_check
     ].freeze
 
@@ -45,6 +45,24 @@ module AgentsControl
     end
 
     private
+
+    # An unusable record is the case worth naming out loud: everywhere
+    # else it's treated as "no passphrase" so the command stays
+    # reachable, and without this nobody would ever learn that what
+    # they set isn't being used.
+    def passphrase_check
+      store = Passphrase.new(secrets: @secrets)
+
+      if store.unusable?
+        warn("passphrase", "stored, but not in a format this version reads",
+             "agents_control passphrase set — writes a fresh one")
+      elsif store.configured?
+        ok("passphrase", "set — destructive commands ask for it")
+      else
+        warn("passphrase", "not set — destructive commands ask for a tap",
+             "agents_control passphrase set")
+      end
+    end
 
     def ok(name, detail) = Check.new(name: name, status: :ok, detail: detail)
     def warn(name, detail, fix = nil) = Check.new(name: name, status: :warn, detail: detail, fix: fix)

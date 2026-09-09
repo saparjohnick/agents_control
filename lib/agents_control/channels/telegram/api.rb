@@ -26,6 +26,7 @@ module AgentsControl
         # noticeably shorter than that.
         CALL_TIMEOUT = 8
 
+
         Error = Class.new(AgentsControl::Error)
 
         # Another process is already reading updates with this same
@@ -82,6 +83,16 @@ module AgentsControl
 
         # The command menu in the Telegram UI: a button next to the
         # input field instead of hunting through the chat for a list.
+        # Best-effort on purpose: a passphrase typed into a chat is
+        # deleted the moment it's read, and a bot that can't delete it
+        # (too old, permissions) must still not leave the command it
+        # was unlocking half-done.
+        def delete_message(chat_id:, message_id:)
+          call("deleteMessage", chat_id: chat_id, message_id: message_id)
+        rescue Error, Unavailable
+          false
+        end
+
         def set_my_commands(commands)
           payload = commands.map { |name, description| { command: name, description: description } }
 
@@ -156,6 +167,9 @@ module AgentsControl
       class Http
         NetworkError = Class.new(StandardError)
 
+        # Written straight to the open file as chunks arrive. The caller
+        # owns the path; a failure part-way leaves a partial file, which
+        # is why callers download to a temporary name and rename.
         def post(uri, params, read_timeout:)
           request = Net::HTTP::Post.new(uri)
           request.set_form_data(params)

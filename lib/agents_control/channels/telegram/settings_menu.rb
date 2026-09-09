@@ -35,15 +35,17 @@ module AgentsControl
             values: [100, 200, 500, 1000], unit: "", default: 200 }
         ].freeze
 
-        def initialize(store:, config:)
+        def initialize(store:, config:, passphrase: nil)
           @store = store
           @config = config
+          @passphrase = passphrase || Passphrase.new
         end
 
         # List rows without a header — the console shows the same rows
         # in a menu navigated with arrow keys.
         def rows
-          (TOGGLES + CHOICES).map { |item| "#{item[:label]}: #{value_label(item)}" }
+          (TOGGLES + CHOICES).map { |item| "#{item[:label]}: #{value_label(item)}" } +
+            ["Destructive commands: #{@passphrase.configured? ? '🔐 passphrase' : 'a tap'}"]
         end
 
         def text
@@ -53,8 +55,16 @@ module AgentsControl
         def markup
           rows = TOGGLES.map { |item| [toggle_button(item)] }
           rows += CHOICES.map { |item| [choice_button(item)] }
+          rows << [passphrase_button] unless @passphrase.configured?
 
           { inline_keyboard: rows }
+        end
+
+        # The one place the offer lives permanently, so a refusal
+        # elsewhere doesn't make it unreachable.
+        def passphrase_button
+          { text: "🔐 Set a passphrase",
+            callback_data: @store.put({ "action" => "passphrase_wizard" }, ttl: 3600) }
         end
 
         # Apply a press and return what changed, to show the human.

@@ -16,7 +16,18 @@ module AgentsControl
         # the setup wizard. Without this filter, anyone who found the bot
         # could approve command execution on this machine.
         "allowed_chat_ids" => [],
-        "poll_timeout" => 30
+        "poll_timeout" => 30,
+        # Whether a destructive command with no passphrase set offers to
+        # set one. Turned off by "Don't ask again": someone who has
+        # decided they don't want a passphrase shouldn't meet a wizard
+        # at every rm -rf, which is the nagging this is meant to avoid.
+        "offer_passphrase" => true,
+        # Whether the one-time notice has gone out. Sent once, on the
+        # first daemon start where no passphrase is set — otherwise
+        # someone who never types a destructive command themselves never
+        # learns the option exists, and the first one that does turn up
+        # may not be theirs.
+        "passphrase_notice_sent" => false
       },
       "answers" => {
         # Answering "continue" on the user's behalf is safe.
