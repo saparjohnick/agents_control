@@ -430,6 +430,13 @@ The passphrase is stored derived (PBKDF2-HMAC-SHA256, salted) next to
 the bot token, and is never accepted as a command-line argument.
 `agents_control passphrase clear` goes back to the button.
 
+## Changes between versions
+
+[CHANGELOG.md](CHANGELOG.md) — what changed and why, newest first. Read
+the current entry before upgrading if you rely on `/run`: while the
+major is 0, a minor bump may change behaviour, and the entry says so
+where it does.
+
 ## Development
 
 ```sh
