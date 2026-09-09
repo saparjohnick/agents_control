@@ -61,8 +61,19 @@ module AgentsControl
       FIELD = "\x1F"
       RECORD = "\x1E"
 
+      # tmux 3.5 prints a non-printable byte in -F output as its octal
+      # escape — the four characters "\037" — where 3.7 emits the byte
+      # itself. Splitting on the byte then finds nothing, and the whole
+      # backend reports no panes at all: on Debian 13 and Ubuntu 24.10,
+      # whose tmux is 3.5a, the tool showed an empty tab list and gave
+      # no hint why. Both forms are accepted rather than betting on a
+      # version, and only these two sequences are converted — a window
+      # name containing the literal text is not something to go looking
+      # for.
+      ESCAPED = { "\\037" => FIELD, "\\036" => RECORD }.freeze
+
       def parse_records(output, fields)
-        output.split(RECORD).filter_map do |record|
+        output.to_s.gsub(/\\03[67]/, ESCAPED).split(RECORD).filter_map do |record|
           next if record.strip.empty?
 
           values = record.split(FIELD, -1)

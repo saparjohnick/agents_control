@@ -25,6 +25,9 @@ config.yml
 *.gem
 Gemfile.lock
 
+# Local Linux smoke-test rig — throwaway, never shipped.
+/linux-test/
+
 # macOS
 .DS_Store
 

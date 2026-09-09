@@ -10,6 +10,23 @@ module AgentsControl
         @tmux = Tmux.new(executor: @executor)
       end
 
+      # tmux 3.5a — Debian 13's and Ubuntu 24.10's — prints the field
+      # and record separators as their octal escapes rather than as the
+      # bytes themselves, so splitting on the byte found nothing and the
+      # tab list came back empty with nothing to explain it. Confirmed
+      # against both versions: 3.7b emits the bytes, 3.5a the text.
+      def test_reads_panes_from_a_tmux_that_escapes_the_separators
+        escaped = "%0\\037/dev/pts/0\\037bash\\037/tmp\\037smoke\\037bash\\036\n"
+        backend = Tmux.new(executor: FakeExecutor.new("list-panes" => escaped))
+
+        panes = backend.sessions
+
+        assert_equal 1, panes.size
+        assert_equal "%0", panes.first.id
+        assert_equal "/tmp", panes.first.cwd
+        assert_equal "/dev/pts/0", panes.first.tty
+      end
+
       def test_parses_panes
         assert_equal 2, @tmux.sessions.size
       end
