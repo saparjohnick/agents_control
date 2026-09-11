@@ -3,6 +3,26 @@
 Newest first. While the major is 0, a minor bump may change behaviour —
 entries say so where it does.
 
+## 0.3.1 — 2026-09-11
+
+### Fixed
+
+- **The daemon went permanently deaf on a routine network error.**
+  Network failures were translated into a retry by matching a
+  hand-written list of `Errno` constants. `EADDRNOTAVAIL` — what a VPN
+  reconnecting produces — wasn't on it, so it escaped every rescue and
+  killed the polling thread. The process stayed up, the hook port kept
+  answering, agent events kept arriving, and nothing from Telegram ever
+  did again. The list is now the whole `SystemCallError` family, and a
+  backstop catches anything still unaccounted for.
+
+### Added
+
+- **`doctor` reports whether the daemon is still listening**, not just
+  whether it's running — the hook port answers the same either way, so
+  a dead poller was indistinguishable from a healthy one. A successful
+  poll leaves a timestamp; `doctor` reads it and says how long ago.
+
 ## 0.3.0 — 2026-09-11
 
 ### Changed
