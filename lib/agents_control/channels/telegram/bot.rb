@@ -59,6 +59,12 @@ module AgentsControl
 
         def stop = @stopped&.push(nil)
 
+        # Whether the Telegram side is actually alive. The daemon holds
+        # its port and answers hooks whether or not this thread is
+        # running, so without asking there is no way to tell a bot that
+        # is listening from one that died quietly hours ago.
+        def polling? = @poller&.alive? || false
+
         def running? = @running
 
         private
@@ -86,8 +92,27 @@ module AgentsControl
               failures += 1
               log("API error: #{e.message}")
               pause(backoff(failures))
+            rescue StandardError => e
+              # A backstop, not a place to add expected errors above it.
+              # Whatever it is, the bot going deaf until someone notices
+              # is worse than retrying: the daemon keeps its port and its
+              # hooks either way, so a dead poller looks exactly like a
+              # healthy one from outside.
+              failures += 1
+              log("unexpected #{e.class}: #{redacted(e)}, retrying in #{backoff(failures)}s")
+              pause(backoff(failures))
             end
           end
+        end
+
+        # The message may carry the token, so it is only printed once
+        # redaction has actually succeeded — and redaction failing must
+        # not take the handler down with it, which is how the backstop
+        # above managed to kill the very thread it exists to keep alive.
+        def redacted(error)
+          @api.redact(error.message)
+        rescue StandardError
+          "(message withheld — could not redact)"
         end
 
         def poll_once

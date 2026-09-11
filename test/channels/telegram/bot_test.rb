@@ -17,6 +17,9 @@ module AgentsControl
             @offsets = []
           end
 
+          # The real Api has this, and the poller's error path calls it.
+          def redact(text) = text.to_s
+
           def get_updates(offset: nil, timeout: 30)
             @offsets << offset
             raise @error if @error
@@ -119,6 +122,39 @@ module AgentsControl
           bot.wait
 
           assert_includes @log.string, "retrying in"
+        end
+
+        # A poller that dies takes Telegram with it while the daemon
+        # keeps its port and its hooks, so from outside it looks
+        # perfectly healthy. This happened: Errno::EADDRNOTAVAIL, which
+        # a VPN reconnecting produces, was not on the recognised list
+        # and killed the thread. Messages stopped arriving for days.
+        def test_an_unlisted_system_error_does_not_kill_the_poller
+          api = ScriptedApi.new(error: Errno::EADDRNOTAVAIL.new("api.telegram.org:443"))
+          bot = build(api, CountingRouter.new)
+
+          bot.start
+          wait_until { @log.string.include?("retrying in") }
+
+          assert_predicate bot, :polling?, "the poller died instead of retrying"
+
+          bot.stop
+          bot.wait
+
+          assert_includes @log.string, "retrying in"
+        end
+
+        # Anything at all, not just the errors anyone thought of.
+        def test_an_unexpected_error_does_not_kill_the_poller_either
+          api = ScriptedApi.new(error: RuntimeError.new("something nobody predicted"))
+          bot = build(api, CountingRouter.new)
+
+          bot.start
+          wait_until { @log.string.include?("unexpected RuntimeError") }
+          bot.stop
+          bot.wait
+
+          assert_includes @log.string, "something nobody predicted"
         end
 
         private

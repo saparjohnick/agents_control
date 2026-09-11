@@ -242,10 +242,16 @@ module AgentsControl
           raise NetworkError, e.message
         end
 
+        # SystemCallError as a family rather than a list of Errno
+        # constants. The list was a bet on knowing every errno a network
+        # stack can raise, and it lost: Errno::EADDRNOTAVAIL — "can't
+        # assign requested address", what a VPN reconnecting produces —
+        # wasn't on it, so it escaped as itself instead of arriving as
+        # Unavailable, and killed the polling thread outright. The
+        # daemon stayed up with its port open and simply stopped hearing
+        # Telegram, for days, with nothing in the log after the trace.
         NETWORK_ERRORS = [
-          Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH,
-          Errno::ENETUNREACH, Errno::ETIMEDOUT, Errno::EPIPE,
-          SocketError, Timeout::Error, OpenSSL::SSL::SSLError, IOError
+          SystemCallError, SocketError, Timeout::Error, OpenSSL::SSL::SSLError, IOError
         ].freeze
       end
     end
