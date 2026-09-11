@@ -18,6 +18,17 @@ task default: :test
 # formatting untouched, so a version bump doesn't produce a noisy diff.
 MANIFESTS = [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"].freeze
 
+# The body of one version's entry, without its own heading — gh adds
+# the title separately. Falls back to a pointer rather than failing the
+# release over a missing entry, but says so loudly enough to notice.
+def changelog_section(version)
+  body = File.read("CHANGELOG.md")[/^## #{Regexp.escape(version)}\b.*?\n(.*?)(?=\n## |\z)/m, 1]
+  return body.strip unless body.to_s.strip.empty?
+
+  warn("no CHANGELOG entry for #{version} — the release will point at the file instead")
+  "See [CHANGELOG.md](CHANGELOG.md)."
+end
+
 namespace :version do
   desc "Sync the Claude Code plugin manifests to lib/agents_control/version.rb"
   task :sync do
@@ -44,6 +55,13 @@ task ship: [:test, "version:sync"] do
 
   require_relative "lib/agents_control/version"
   version = AgentsControl::VERSION
-  sh "gh", "release", "create", "v#{version}", "--title", "v#{version}", "--generate-notes"
+
+  # The release carries the changelog entry, not a list of commit
+  # subjects: someone deciding whether to upgrade needs to read what
+  # changed, and "Bump version to 0.3.0" tells them nothing.
+  notes = File.join("pkg", "release-notes-#{version}.md")
+  File.write(notes, changelog_section(version))
+
+  sh "gh", "release", "create", "v#{version}", "--title", "v#{version}", "--notes-file", notes
   sh "claude", "plugin", "tag", ".", "--push", "-m", "agents-control %s"
 end
