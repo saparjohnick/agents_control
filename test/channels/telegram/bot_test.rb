@@ -157,6 +157,40 @@ module AgentsControl
           assert_includes @log.string, "something nobody predicted"
         end
 
+        # Something outside the process has to be able to tell a bot
+        # that is listening from one that died hours ago — the daemon's
+        # port answers the same either way.
+        def test_a_successful_poll_leaves_a_heartbeat
+          bot = build(ScriptedApi.new([update(1)]), CountingRouter.new)
+
+          bot.start
+          wait_until { @store.get(Bot::HEARTBEAT_KEY) }
+          bot.stop
+          bot.wait
+
+          assert_in_delta Time.now.to_i, @store.get(Bot::HEARTBEAT_KEY).to_i, 5
+        end
+
+        # A store that cannot be written is not a reason to stop reading
+        # Telegram, which is the actual job.
+        def test_a_failing_store_does_not_stop_the_poller
+          bot = Bot.new(api: ScriptedApi.new([update(1)]), router: CountingRouter.new,
+                        store: BrokenStore.new, config: @config, logger: @log)
+
+          bot.start
+          wait_until { @log.string.include?("heartbeat") }
+
+          assert_predicate bot, :polling?
+
+          bot.stop
+          bot.wait
+        end
+
+        class BrokenStore
+          def get(_key) = nil
+          def put(*, **) = raise(Errno::EACCES, "store.json")
+        end
+
         private
 
         def build(api, router)

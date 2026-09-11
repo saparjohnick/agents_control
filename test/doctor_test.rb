@@ -106,7 +106,49 @@ module AgentsControl
       assert_includes check.fix, "pmset"
     end
 
+    # ── the daemon can be up and deaf at the same time ───────────────
+
+    # Its port answers whether or not the poll loop is alive, so
+    # "running" was the only question ever asked — and a poller that
+    # died on a network error passed it for days while nothing from
+    # Telegram arrived.
+    def test_reports_a_daemon_that_stopped_polling
+      store = Store.new(path: File.join(@dir, "store.json"))
+      store.put(Time.now.to_i - 3600, ttl: 86_400, key: Channels::Telegram::Bot::HEARTBEAT_KEY)
+
+      check = polling_check_with(store)
+
+      assert_equal :fail, check.status
+      assert_includes check.detail, "aren't arriving"
+      assert_includes check.fix, "agents_control stop"
+    end
+
+    def test_a_recent_poll_reads_as_healthy
+      store = Store.new(path: File.join(@dir, "store.json"))
+      store.put(Time.now.to_i, ttl: 86_400, key: Channels::Telegram::Bot::HEARTBEAT_KEY)
+
+      assert_equal :ok, polling_check_with(store).status
+    end
+
+    # An older daemon, or one that has only just come up, has written
+    # nothing yet — that is not the same as having gone deaf.
+    def test_no_heartbeat_yet_is_a_warning_not_a_failure
+      store = Store.new(path: File.join(@dir, "store.json"))
+
+      assert_equal :warn, polling_check_with(store).status
+    end
+
     private
+
+    # Doctor only asks about polling when the daemon answers on its
+    # port, so the check is exercised directly rather than through run.
+    def polling_check_with(store)
+      doctor = Doctor.new(config: @config, secrets: secrets_without_token,
+                          executor: FakeExecutor.new, api: offline_api, store: store)
+      def doctor.daemon_response(_port) = :ours
+
+      doctor.send(:polling_check)
+    end
 
     # The network is never touched in tests: a stub client is used instead.
     def run_checks(config: @config, secrets: nil, executor: nil, api: nil)

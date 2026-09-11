@@ -18,16 +18,17 @@ module AgentsControl
     # control the app.
     NOT_AUTHORISED = "-1743"
 
-    def initialize(config: nil, secrets: nil, executor: Executor.new, api: nil)
+    def initialize(config: nil, secrets: nil, executor: Executor.new, api: nil, store: nil)
       @config = config || Config.load
       @secrets = secrets || Secrets.new
       @executor = executor
       @api = api
+      @store = store
     end
 
     CHECKS = %i[
       ruby_check terminal_check automation_check agent_binary_check
-      token_check chats_check passphrase_check bot_check daemon_check hooks_check
+      token_check chats_check passphrase_check bot_check daemon_check polling_check hooks_check
       anchors_check wake_check
     ].freeze
 
@@ -184,6 +185,29 @@ module AgentsControl
       else warn("Daemon", "not running", "agents_control daemon")
       end
     end
+
+    # The daemon holds its port and answers hooks whether or not it is
+    # still reading Telegram, so "running" and "listening" are separate
+    # questions and only the first was ever asked. A poll loop that died
+    # on a network error looked exactly like a healthy one — for days,
+    # in the case that prompted this.
+    STALE_AFTER = 120
+
+    def polling_check
+      return nil unless daemon_response(@config.get("hooks.port", Daemon::DEFAULT_PORT)) == :ours
+
+      last = store.get(Channels::Telegram::Bot::HEARTBEAT_KEY)
+      return warn("Telegram", "the daemon hasn't reported a poll yet",
+                  "if it persists, restart: agents_control stop && agents_control") unless last
+
+      age = Time.now.to_i - last.to_i
+      return ok("Telegram", "polling — last heard #{age}s ago") if age < STALE_AFTER
+
+      fail("Telegram", "the daemon is up but hasn't polled for #{age / 60} min — messages aren't arriving",
+           "agents_control stop && agents_control")
+    end
+
+    def store = @store ||= Store.new
 
     def daemon_response(port)
       socket = Socket.tcp("127.0.0.1", port, connect_timeout: 1)

@@ -16,6 +16,19 @@ module AgentsControl
         # closed laptop doesn't hammer reconnects all night.
         BACKOFF = [1, 2, 5, 10, 30, 60].freeze
 
+        # A successful poll leaves a timestamp behind, so something
+        # outside this process can tell a bot that is listening from one
+        # that stopped hours ago. `polling?` answers that in-process, and
+        # doctor runs as a separate command — the daemon's port reports
+        # only that it is up, which a deaf daemon is too.
+        HEARTBEAT_KEY = "telegram:last_poll"
+
+        # A healthy poll returns at least every telegram.poll_timeout
+        # (30s), and immediately when something arrives. Writing on each
+        # one would rewrite the store several times a second under
+        # traffic, for a reading nobody needs that finely.
+        HEARTBEAT_EVERY = 15
+
         def initialize(api:, router:, store:, config:, logger: $stdout)
           @api = api
           @router = router
@@ -75,6 +88,7 @@ module AgentsControl
           while @running
             begin
               poll_once
+              heartbeat
               failures = 0
             rescue Api::Conflict => e
               # Another process is reading updates — looping further is
@@ -113,6 +127,18 @@ module AgentsControl
           @api.redact(error.message)
         rescue StandardError
           "(message withheld — could not redact)"
+        end
+
+        # Best-effort by design: a store that can't be written is not a
+        # reason to stop reading Telegram, which is the whole job.
+        def heartbeat
+          now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          return if @last_heartbeat && now - @last_heartbeat < HEARTBEAT_EVERY
+
+          @last_heartbeat = now
+          @store.put(Time.now.to_i, ttl: 86_400, key: HEARTBEAT_KEY)
+        rescue StandardError => e
+          log("couldn't record the poll heartbeat: #{e.class}")
         end
 
         def poll_once
