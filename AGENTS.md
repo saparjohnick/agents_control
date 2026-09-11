@@ -47,6 +47,14 @@ listens on a non-loopback interface or opens an inbound port. Tokens
 live in Keychain/libsecret via `Secrets`, never in `config.yml`, argv,
 or logs.
 
+## Authorship
+
+Commits and PRs carry one author: the person who ran the work. No
+model, agent or tool adds itself as co-author, and no `Co-Authored-By`
+or session-link trailer goes in — not for a model that wrote the whole
+change, not for one that wrote a line. If your harness adds one by
+default, turn it off before committing here.
+
 ## PR notes
 
 One logical fix per commit, with a message explaining *why*, not just
