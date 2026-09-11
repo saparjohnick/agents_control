@@ -4,7 +4,7 @@ Notable changes, newest first. Versions follow [semantic
 versioning](https://semver.org): while the major is 0, a minor bump may
 change behaviour, and the entry says so where it does.
 
-## 0.3.0 — unreleased
+## 0.3.0 — 2026-09-11
 
 ### Destructive commands from Telegram now ask first
 
