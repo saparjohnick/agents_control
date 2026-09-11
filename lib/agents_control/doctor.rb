@@ -191,7 +191,14 @@ module AgentsControl
     # questions and only the first was ever asked. A poll loop that died
     # on a network error looked exactly like a healthy one — for days,
     # in the case that prompted this.
-    STALE_AFTER = 120
+    # Derived from the configured long-poll timeout rather than fixed:
+    # a healthy poll returns at least that often, so a hand-raised
+    # telegram.poll_timeout would otherwise make a perfectly good daemon
+    # read as deaf. Two windows plus a minute leaves room for a retry
+    # and the heartbeat's own throttle.
+    def stale_after
+      [(@config.get("telegram.poll_timeout", 30).to_i * 2) + 60, 120].max
+    end
 
     def polling_check
       return nil unless daemon_response(@config.get("hooks.port", Daemon::DEFAULT_PORT)) == :ours
@@ -201,7 +208,7 @@ module AgentsControl
                   "if it persists, restart: agents_control stop && agents_control") unless last
 
       age = Time.now.to_i - last.to_i
-      return ok("Telegram", "polling — last heard #{age}s ago") if age < STALE_AFTER
+      return ok("Telegram", "polling — last heard #{age}s ago") if age < stale_after
 
       fail("Telegram", "the daemon is up but hasn't polled for #{age / 60} min — messages aren't arriving",
            "agents_control stop && agents_control")

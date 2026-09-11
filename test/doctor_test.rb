@@ -138,12 +138,23 @@ module AgentsControl
       assert_equal :warn, polling_check_with(store).status
     end
 
+    # A hand-raised long-poll timeout means a healthy poll returns less
+    # often; the threshold has to follow it or it reports a false alarm.
+    def test_the_staleness_threshold_follows_the_poll_timeout
+      config = Config.new({ "telegram" => { "allowed_chat_ids" => [42], "poll_timeout" => 300 } },
+                          path: File.join(@dir, "config.yml"))
+      store = Store.new(path: File.join(@dir, "store.json"))
+      store.put(Time.now.to_i - 400, ttl: 86_400, key: Channels::Telegram::Bot::HEARTBEAT_KEY)
+
+      assert_equal :ok, polling_check_with(store, config: config).status
+    end
+
     private
 
     # Doctor only asks about polling when the daemon answers on its
     # port, so the check is exercised directly rather than through run.
-    def polling_check_with(store)
-      doctor = Doctor.new(config: @config, secrets: secrets_without_token,
+    def polling_check_with(store, config: @config)
+      doctor = Doctor.new(config: config, secrets: secrets_without_token,
                           executor: FakeExecutor.new, api: offline_api, store: store)
       def doctor.daemon_response(_port) = :ours
 
