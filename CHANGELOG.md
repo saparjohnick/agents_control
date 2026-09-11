@@ -1,103 +1,76 @@
 # Changelog
 
-Notable changes, newest first. Versions follow [semantic
-versioning](https://semver.org): while the major is 0, a minor bump may
-change behaviour, and the entry says so where it does.
+Newest first. While the major is 0, a minor bump may change behaviour —
+entries say so where it does.
 
 ## 0.3.0 — 2026-09-11
 
-### Destructive commands from Telegram now ask first
+### Changed
 
-**This changes what `/run` does.** A handful of commands are held back
-when they arrive from the bot: a recursive force delete aimed at `/` or
-`$HOME`, a fork bomb, `mkfs`, `dd` writing to a raw device. They come
-back with what the command actually does — "this recursively deletes
-`~` — there is no undo" — and one tap sends it anyway.
+- **`/run` now holds back a few destructive commands.** A recursive
+  force delete aimed at `/` or `$HOME`, a fork bomb, `mkfs`, `dd` to a
+  raw device. They come back naming what they do, and one tap sends
+  anyway.
+- Nothing else is affected: `rm -rf /tmp/build`, `cat .env` and
+  `git push --force` go straight through. A seatbelt against the wrong
+  tab number, not a filter — `bash -c 'rm -rf ~'` is not caught.
 
-Nothing else is affected. `rm -rf /tmp/build` goes straight through, as
-do `cat .env` and `git push --force`: the bar is catastrophic and
-irreversible, not merely sensitive, because a list that stops an
-ordinary afternoon trains people to tap past it without reading. This
-is a seatbelt against a thumb on the wrong line of a tab listing, not a
-policy engine — `bash -c 'rm -rf ~'` is not caught, by design.
+### Added
 
-### An optional passphrase for those commands
-
-A tap answers "did you mean this?". It does not answer "are you you?" —
-an unlocked phone in someone else's hand taps just as well as its
-owner. Set a passphrase and destructive commands ask for it instead of
-a button:
-
-```sh
-agents_control passphrase set      # or during `agents_control setup`
-```
-
-It can also be set from the bot, at the moment a destructive command
-turns up. Set that way it guards against whoever reaches the chat
-*later*, not whoever has it now; the bot says so when it saves.
-
-Stored derived (PBKDF2-HMAC-SHA256, 210k iterations, salted per write)
-in the Keychain or libsecret, never as itself, and never accepted as a
-command-line argument. The message carrying it is deleted from the chat
-as soon as it is read, right or wrong, since chat history syncs to
-every device the account is signed in on. `agents_control passphrase
-clear` goes back to the button.
-
-### Files can be sent to a session
-
-Photos, videos, voice notes and documents — a log, a CSV, a screenshot
-— can be sent to the bot and handed to an agent. The file lands in
-`~/.local/state/agents_control/inbox/` and what reaches the pane is its
-local path, so the agent opens it like anything else.
-
-Caption it `/run N …` for a particular tab, or reply with it to a
-session's own message. With nothing to go on the path just comes back
-in the chat, because guessing a target is how a file ends up pasted
-into the wrong project.
-
-A path and never a link: Telegram serves file bytes from
-`/file/bot<TOKEN>/…`, so the download URL *is* the bot token, and
-handing that to an agent would put it in the terminal and the shell
-history. Files are kept for `telegram.inbox_keep_days` (14) and then
-swept.
+- **Optional passphrase** for those commands, instead of a tap.
+  `agents_control passphrase set|clear|status`, offered during `setup`
+  and from the bot itself.
+  - PBKDF2-HMAC-SHA256, 210k iterations, salted; Keychain or libsecret;
+    never argv.
+  - The message carrying it is deleted from the chat once read.
+  - Set from the chat, it guards against whoever reaches that chat
+    later, not whoever has it now.
+- **Files can be sent to a session** — photos, video, voice, documents.
+  - Saved to `~/.local/state/agents_control/inbox/`; the pane gets the
+    local path, never a link (the download URL contains the bot token).
+  - Target: caption `/run N …`, or reply with the file to a session's
+    message. Otherwise the path just comes back in the chat.
+  - Kept `telegram.inbox_keep_days` (14), then swept.
+- `/status`, `/settings` and `doctor` report whether a passphrase is set.
 
 ### Fixed
 
-- **The tmux backend saw no panes on tmux 3.5** — Debian 13's version
-  and Ubuntu 24.10's. Pane records are separated by non-printable
-  bytes; tmux 3.7 emits them and 3.5 prints their octal escapes
-  instead, so the parse found nothing. `/tabs` came back empty with no
-  error to explain it. Both forms are read now.
-- **The startup hook self-check probed whichever hook was listed
-  first**, which is ours only until the user has a `Stop` hook of their
-  own. It replays that entry's headers to that entry's URL, and did so
-  without TLS — sending a third party's bearer token in cleartext, once
-  per daemon start. Ours is found by its marker now, and only probed on
-  loopback.
+- **No panes were listed on tmux 3.5** — Debian 13's and Ubuntu
+  24.10's. It prints the record separators as octal escapes where 3.7
+  emits the bytes, so the parse found nothing and `/tabs` came back
+  empty with no error.
+- **The startup hook check probed whichever hook was listed first** —
+  ours only until you have a `Stop` hook of your own. It replayed that
+  entry's headers to its URL without TLS, sending a third party's
+  bearer token in cleartext once per daemon start. Found by its marker
+  now, and only probed on loopback.
+
+### Internal
+
+- The suite runs on Linux (554 tests, both platforms). It was green on
+  macOS and 88 failures deep on Linux, which is how the tmux bug above
+  survived a release.
+- The suite fails if a test is written where Minitest won't collect it.
 
 ## 0.2.3 — 2026-09-04
 
-- Recognize menus whose options span several lines, so a skill's own
-  wizard reaches Telegram as buttons rather than not at all.
-- Catch a pager by what is on screen, not only by its name: a bare `:`
-  as the whole last line is the one thing every pager agrees on.
+- Menus whose options span several lines reach Telegram as buttons.
+- A pager is caught by what's on screen, not only by its name.
 
 ## 0.2.2 — 2026-09-01
 
-- Confirm before sending text into a pager, editor or REPL. A tab left
-  inside `less` reads a command as keystrokes, and nothing runs.
+- Confirm before sending text into a pager, editor or REPL — a tab
+  inside `less` reads a command as keystrokes and nothing runs.
 
 ## 0.2.1 — 2026-09-01
 
 - `/run` against an agent confirms the send instead of dumping the
-  whole transcript. An agent is not a command that finishes in a
-  second, so there is no result to capture yet.
+  transcript.
 
 ## 0.2.0 — 2026-09-01
 
-- `/run` shows the command's actual result. The command itself is the
-  anchor — the shell echoes it back — which survives other output
-  arriving in the same tab.
+- `/run` shows the command's actual result, anchored on the echoed
+  command rather than a screen diff.
 
 ## 0.1.1 — 2026-09-01
 
@@ -105,7 +78,6 @@ swept.
 
 ## 0.1.0 — 2026-08-31
 
-First release. Terminal control from Telegram — tab list, commands,
-screen, new sessions — and, for Claude Code, its questions and
-permission requests relayed as buttons. AskUserQuestion answered with
-real buttons per option.
+First release. Tab list, commands, screen and new sessions from
+Telegram; for Claude Code, its questions and permission requests as
+buttons, AskUserQuestion with one button per option.
