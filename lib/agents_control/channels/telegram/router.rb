@@ -227,20 +227,48 @@ module AgentsControl
         # ends up pasted into the wrong project.
         def deliver_file(chat_id, message, path)
           caption = message["caption"].to_s.strip
+          album = album_key(chat_id, message)
 
           if (target = caption[%r{\A/run\s+(\d+)}i, 1])
             return with_session(chat_id, target) do |session|
               execute(chat_id, session, with_path(caption.sub(%r{\A/run\s+\d+\s*}i, ""), path),
                       show_result: !session.agent?)
+              remember_album(album, session)
             end
           end
 
           replied = message["reply_to_message"]
           remembered = replied && @store.get("reply:#{chat_id}:#{replied['message_id']}")
-          return type_into_session(chat_id, remembered, with_path(caption, path)) if remembered
+          return remember_album(album, type_into_session(chat_id, remembered, with_path(caption, path))) if remembered
+
+          if (session = album_session(album))
+            return execute(chat_id, session, with_path("", path))
+          end
 
           say(chat_id, "Saved:\n\n`#{path}`\n\nReply to a session's message with a file to hand it " \
                        "straight over, or caption it `/run N`.")
+        end
+
+        # Telegram splits an album into one message per file and puts the
+        # caption — and the reply — on only one of them, so the rest
+        # arrive saying nothing about where they go. They go where the
+        # album's caption sent it: sending files together means that.
+        def album_key(chat_id, message)
+          group = message["media_group_id"]
+          group && "album:#{chat_id}:#{group}"
+        end
+
+        # Only an agent gets the rest of the album: a bare path typed
+        # into a shell is a command, not a file handed over.
+        def remember_album(key, session)
+          @store.put(session.id, ttl: 600, key: key) if key && session&.agent?
+          session
+        end
+
+        def album_session(key)
+          id = key && @store.get(key)
+          session = id && @registry.refresh.find(id)
+          session if session&.agent? && !session.terminalless?
         end
 
         # Escaped, because a name like "quarterly report.csv" is

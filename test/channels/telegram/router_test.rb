@@ -1111,6 +1111,36 @@ module AgentsControl
           assert_includes typed, "/tmp/inbox/shot.png"
         end
 
+        # Telegram gives the caption and the reply to one file of an
+        # album; the others arrive bare.
+        def test_the_rest_of_an_album_follows_its_first_file_to_the_agent
+          agent = Session.new(id: "TAB-V", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/videodryer", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config,
+                              registry: FakeMultiRegistry.new([agent], backend),
+                              inbox: Sequence.new("/tmp/inbox/a.mov", "/tmp/inbox/b.mov"))
+          @store.put({ "session_id" => "TAB-V", "cwd" => "/tmp/videodryer", "label" => "videodryer" },
+                     key: "reply:#{OWNER}:555")
+
+          router.handle(in_album(with_document("a.mov", caption: "compare these", reply_to: 555, chat_id: OWNER)))
+          router.handle(in_album(with_document("b.mov", chat_id: OWNER)))
+
+          assert_includes backend.calls, ["TAB-V", "compare these /tmp/inbox/a.mov"]
+          assert_includes backend.calls, ["TAB-V", "/tmp/inbox/b.mov"]
+        end
+
+        def test_the_rest_of_an_album_is_not_typed_into_a_shell
+          executor, router = shell_tab(inbox: Sequence.new("/tmp/inbox/a.txt", "/tmp/inbox/b.txt"))
+          number = tab_number(router)
+
+          router.handle(in_album(with_document("a.txt", caption: "/run #{number} cat", chat_id: OWNER)))
+          router.handle(in_album(with_document("b.txt", chat_id: OWNER)))
+
+          refute_includes typed(executor), "/tmp/inbox/b.txt"
+          assert_includes @api.last_text, "b.txt"
+        end
+
         # Guessing a target for a file is how it gets pasted into the
         # wrong project. With nothing to go on, hand back the path.
         def test_a_file_with_no_target_is_only_saved
@@ -1449,6 +1479,17 @@ module AgentsControl
             @fetches += 1
             @path
           end
+        end
+
+        # Hands out a different path for each file, in order.
+        class Sequence
+          def initialize(*paths) = @paths = paths
+          def fetch(_attachment) = @paths.shift
+        end
+
+        def in_album(update)
+          update["message"]["media_group_id"] = "13785"
+          update
         end
 
         class FailingInbox
