@@ -3,6 +3,39 @@
 Newest first. While the major is 0, a minor bump may change behaviour —
 entries say so where it does.
 
+## 0.4.0 — 2026-10-10
+
+### Changed
+
+- **Text sent without a reply now goes to the session that spoke
+  last.** Until now it got "I don't know that command". The last
+  session is whichever one the bot most recently sent a message about
+  — a notification, `/screen`, `/context` — and the text is handled
+  exactly as a reply to that message would be. A reply still wins over
+  it, and commands (`/…`) are never typed into a session. If that
+  session is a plain shell, the text is typed into the shell.
+
+### Fixed
+
+- **A tab's agent was missed by a daemon that had been running a
+  while.** The per-tab view of the process list was never refreshed, so
+  an agent started after the daemon did showed as a plain shell
+  in `/tabs`.
+- **An agent was shown as a plain shell once Claude Code renamed its
+  own process** to `Claude` partway through a long session.
+- **A reply to an agent that had `cd`'d into a subfolder found no
+  tab.** The nearest agent in a directory above is now taken to be the
+  same one; a plain shell up there never is.
+- **A dropped network lost what it carried.** A notification that hit
+  an outage is retried in the background for about a quarter of an
+  hour, a file from the phone is downloaded again a few times before it
+  is reported, and the poller's pause after a network error now tops
+  out at 10 seconds instead of a minute.
+- **The rest of an album now follows its first file** to the agent it
+  was sent to, instead of only being saved. Never into a shell.
+- **The daemon's log lines no longer land on top of the line being
+  typed** in the console.
+
 ## 0.3.1 — 2026-09-11
 
 ### Fixed
