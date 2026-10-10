@@ -12,9 +12,12 @@ module AgentsControl
       class Bot
         OFFSET_KEY = "telegram:offset"
 
-        # Pause after a network failure: grows toward a ceiling so a
-        # closed laptop doesn't hammer reconnects all night.
-        BACKOFF = [1, 2, 5, 10, 30, 60].freeze
+        # Pause after a network failure. The ceiling is low on purpose:
+        # nothing tells us the network is back, so the pause is how long
+        # the bot stays deaf after a switch between networks — and a
+        # minute of that read as "it froze". A closed laptop is asleep
+        # and doesn't retry at all, so a short ceiling costs nothing there.
+        BACKOFF = [1, 2, 5, 10].freeze
 
         # A successful poll leaves a timestamp behind, so something
         # outside this process can tell a bot that is listening from one

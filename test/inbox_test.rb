@@ -50,6 +50,23 @@ module AgentsControl
 
     # ── fetching ─────────────────────────────────────────────────────
 
+    def test_a_dropped_connection_is_retried_rather_than_losing_the_file
+      @api.drops = 2
+      inbox = Inbox.new(api: @api, dir: @dir, sleeper: ->(_) {})
+
+      path = inbox.fetch(attachment(file_name: "clip.mov"))
+
+      assert_equal "file body", File.read(path)
+    end
+
+    def test_a_network_that_stays_down_is_reported_after_a_few_tries
+      @api.drops = Float::INFINITY
+      inbox = Inbox.new(api: @api, dir: @dir, sleeper: ->(_) {})
+
+      assert_raises(Channels::Telegram::Api::Unavailable) { inbox.fetch(attachment(file_name: "clip.mov")) }
+      assert_empty Dir.children(@dir).grep(/\.part\z/)
+    end
+
     def test_the_file_lands_on_disk_with_its_contents
       path = @inbox.fetch(attachment(file_name: "notes.txt"))
 
@@ -178,18 +195,24 @@ module AgentsControl
     # the network; the "download" just writes a known body.
     class FakeFiles
       attr_reader :downloads
-      attr_accessor :remote, :fail_download
+      attr_accessor :remote, :fail_download, :drops
 
       def initialize
         @downloads = []
         @remote = "documents/file_1.bin"
         @fail_download = false
+        @drops = 0
       end
 
       def file_path_for(_file_id) = @remote
 
       def download(remote, to:, max_bytes: nil)
         raise "the connection dropped" if @fail_download
+
+        if @drops.positive?
+          @drops -= 1
+          raise Channels::Telegram::Api::Unavailable, "SSL_connect returned=1 errno=0: unexpected eof while reading"
+        end
 
         @cap = max_bytes
         @downloads << remote

@@ -274,6 +274,51 @@ module AgentsControl
           assert(rows.flatten.any? { |b| b[:text].include?("Allow") })
         end
 
+        # ── the network drops ───────────────────────────────────────────
+
+        def test_a_message_the_network_dropped_goes_out_once_it_is_back
+          api = OfflineApi.new(@api, failures: 2)
+          deferred = []
+          channel = Channel.new(api: api, store: @store, config: @config,
+                                later: ->(&work) { deferred << work }, sleeper: ->(_) {})
+
+          channel.notify(event(text: "build finished"))
+
+          assert_empty @api.sent, "the hook must not wait for the network"
+          deferred.each(&:call)
+          assert_includes @api.last_text, "build finished"
+          assert @store.get("reply:424242:1"), "the late message still has to be replyable"
+        end
+
+        def test_resending_gives_up_rather_than_trying_forever
+          api = OfflineApi.new(@api, failures: Float::INFINITY)
+          channel = Channel.new(api: api, store: @store, config: @config,
+                                later: ->(&work) { work.call }, sleeper: ->(_) {})
+
+          channel.notify(event(text: "build finished"))
+
+          assert_equal Channel::RESEND_AFTER.size + 1, api.attempts
+          assert_empty @api.sent
+        end
+
+        # Every send fails as a dropped network until `failures` run out.
+        class OfflineApi < SimpleDelegator
+          attr_reader :attempts
+
+          def initialize(api, failures:)
+            super(api)
+            @failures = failures
+            @attempts = 0
+          end
+
+          def send_message(**args)
+            @attempts += 1
+            raise Api::Unavailable, "Net::OpenTimeout" if @attempts <= @failures
+
+            super
+          end
+        end
+
         private
 
         def event(text: "question")

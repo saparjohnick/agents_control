@@ -10,11 +10,19 @@ module AgentsControl
       # because a button physically can't carry more than 64 bytes, and
       # the whole content of an action lives on our side anyway.
       class Channel < Channels::Base
-        def initialize(api:, store:, config:, registry: nil)
+        # Roughly a quarter of an hour in all: long enough to ride out
+        # a switch between networks or a VPN reconnecting, short enough
+        # that a message doesn't turn up hours after it stopped mattering.
+        RESEND_AFTER = [5, 15, 30, 60, 120, 300, 300].freeze
+
+        def initialize(api:, store:, config:, registry: nil,
+                       later: ->(&work) { Thread.new(&work) }, sleeper: ->(seconds) { sleep(seconds) })
           @api = api
           @store = store
           @config = config
           @registry = registry
+          @later = later
+          @sleeper = sleeper
         end
 
         def ready? = !chats.empty?
@@ -56,15 +64,44 @@ module AgentsControl
           chunks = [""] if chunks.empty?
 
           chats.each do |chat_id|
-            chunks.each_with_index do |chunk, i|
-              body = "#{continuation_marker(i, chunks.size)}#{chunk}"
-              sent = send_formatted(chat_id, body, i == chunks.size - 1 ? markup : nil)
-              remember(chat_id, sent, event, question_id) if event
+            stuck = send_chunks(chat_id, chunks, 0, markup, event, question_id)
+            resend_later(chat_id, chunks, stuck, markup, event, question_id) if stuck
+          end
+        end
+
+        # Returns the index of the first chunk the network kept from
+        # going out, or nil once there's nothing left to send.
+        def send_chunks(chat_id, chunks, from, markup, event, question_id)
+          (from...chunks.size).each do |i|
+            body = "#{continuation_marker(i, chunks.size)}#{chunks[i]}"
+            sent = begin
+              send_formatted(chat_id, body, i == chunks.size - 1 ? markup : nil)
+            rescue Api::Unavailable
+              return i
             end
-          rescue Api::Error
-            # One unreachable chat must not affect the rest, and
-            # definitely must not take down the thread holding the agent.
-            next
+            remember(chat_id, sent, event, question_id) if event
+          end
+
+          nil
+        rescue Api::Error
+          # One unreachable chat must not affect the rest, and
+          # definitely must not take down the thread holding the agent.
+          nil
+        end
+
+        # Off the calling thread: that thread is holding the agent's
+        # hook open, and the agent must not sit waiting for the Wi-Fi
+        # to come back. Dropping the message instead is how an agent
+        # that finished during a network switch went unheard of.
+        def resend_later(chat_id, chunks, from, markup, event, question_id)
+          @later.call do
+            RESEND_AFTER.each do |delay|
+              @sleeper.call(delay)
+              from = send_chunks(chat_id, chunks, from, markup, event, question_id)
+              break unless from
+            end
+          rescue StandardError
+            nil
           end
         end
 

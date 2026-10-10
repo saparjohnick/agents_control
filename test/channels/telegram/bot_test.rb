@@ -124,6 +124,14 @@ module AgentsControl
           assert_includes @log.string, "retrying in"
         end
 
+        # Nothing signals that the network came back, so however long
+        # the pause has grown is how long the bot stays deaf after it does.
+        def test_retries_never_pause_long_after_a_network_switch
+          bot = build(ScriptedApi.new(error: Api::Unavailable.new("network dropped")), CountingRouter.new)
+
+          assert_equal 10, bot.send(:backoff, 1_000)
+        end
+
         # A poller that dies takes Telegram with it while the daemon
         # keeps its port and its hooks, so from outside it looks
         # perfectly healthy. This happened: Errno::EADDRNOTAVAIL, which

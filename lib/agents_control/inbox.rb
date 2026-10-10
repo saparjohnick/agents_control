@@ -57,10 +57,17 @@ module AgentsControl
 
     class TooLarge < StandardError; end
 
-    def initialize(api:, dir: self.class.path, keep_days: 14)
+    # Seconds between attempts. A dropped connection on a phone's
+    # network or a reconnecting VPN is gone again within seconds, and
+    # the alternative is asking someone away from home to send the
+    # file again.
+    RETRY_AFTER = [1, 3, 5].freeze
+
+    def initialize(api:, dir: self.class.path, keep_days: 14, sleeper: ->(seconds) { sleep(seconds) })
       @api = api
       @dir = dir
       @keep_days = keep_days
+      @sleeper = sleeper
     end
 
     # The local path the file landed at.
@@ -68,16 +75,31 @@ module AgentsControl
       size = attachment.file_size.to_i
       raise TooLarge, "#{human(size)} is over the #{human(MAX_BYTES)} Telegram allows a bot to download" if size > MAX_BYTES
 
-      remote = @api.file_path_for(attachment.file_id)
-      prepare
-      destination = File.join(@dir, name_for(attachment, remote))
+      retrying do
+        remote = @api.file_path_for(attachment.file_id)
+        prepare
+        destination = File.join(@dir, name_for(attachment, remote))
 
-      download(remote, destination)
-      prune
-      destination
+        download(remote, destination)
+        prune
+        destination
+      end
     end
 
     private
+
+    def retrying
+      attempt = 0
+      begin
+        yield
+      rescue Channels::Telegram::Api::Unavailable
+        raise if attempt >= RETRY_AFTER.size
+
+        @sleeper.call(RETRY_AFTER[attempt])
+        attempt += 1
+        retry
+      end
+    end
 
     # Downloaded beside the destination and renamed into place: a
     # connection that drops half way through otherwise leaves a
