@@ -42,10 +42,13 @@ module AgentsControl
     end
 
     # Re-reads the process tree. The result is cached on the object — one
-    # probe per registry pass.
+    # probe per registry pass. The per-tab index is derived from it, so it
+    # has to be dropped here too: a long-lived daemon would otherwise keep
+    # answering from the first snapshot it ever took.
     def refresh
       result = @executor.run(Which.find!("ps"), "-A", "-o", "tty=,pid=,stat=,comm=")
       @processes = result.success? ? parse(result.stdout) : []
+      @by_tty = nil
       self
     end
 

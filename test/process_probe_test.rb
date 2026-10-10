@@ -84,6 +84,16 @@ module AgentsControl
       assert_equal calls_before, @executor.calls.size
     end
 
+    def test_refresh_replaces_the_per_tab_view
+      probe = ProcessProbe.new(executor: FakeExecutor.new("-o" => [
+        "ttys001 2025 S -zsh\n",
+        "ttys001 2025 S -zsh\nttys001 4735 S+ Claude\n"
+      ])).refresh
+
+      assert_nil probe.agent_in("ttys001")
+      assert_equal 4735, probe.refresh.agent_in("ttys001").pid
+    end
+
     def test_survives_failing_ps
       probe = ProcessProbe.new(executor: FakeExecutor.new).refresh
 
