@@ -126,6 +126,10 @@ module AgentsControl
 
           return compose_answer(chat_id, text) if composing?(chat_id) && !text.start_with?("/")
 
+          if !text.empty? && !text.start_with?("/") && (target = @store.get(last_target_key(chat_id)))
+            return answer_target(chat_id, target, text)
+          end
+
           command, argument = text.split(/\s+/, 2)
 
           dispatch(chat_id, command.to_s.sub(/@.*\z/, ""), argument.to_s)
@@ -138,6 +142,10 @@ module AgentsControl
           target = @store.get("reply:#{chat_id}:#{replied['message_id']}")
           return say(chat_id, "I don't remember which session that message was about.") unless target
 
+          answer_target(chat_id, target, text)
+        end
+
+        def answer_target(chat_id, target, text)
           question = target["question_id"]
           return deliver(chat_id, question, Reply.text(text)) if question && @pending&.find(question)
 
@@ -730,9 +738,14 @@ module AgentsControl
           id = sent.is_a?(Hash) ? sent["message_id"] : nil
           return unless id
 
-          @store.put({ "session_id" => session.id, "cwd" => session.cwd, "label" => session.label },
-                     ttl: REPLY_TARGET_TTL, key: "reply:#{chat_id}:#{id}")
+          target = { "session_id" => session.id, "cwd" => session.cwd, "label" => session.label }
+          @store.put(target, ttl: REPLY_TARGET_TTL, key: "reply:#{chat_id}:#{id}")
+          @store.put(target, ttl: REPLY_TARGET_TTL, key: last_target_key(chat_id))
         end
+
+        # Text sent without a reply goes to the session of the last message
+        # the bot sent, so a back-and-forth with one agent needs no replies.
+        def last_target_key(chat_id) = "last:#{chat_id}"
 
         def status(chat_id)
           sessions = @registry.refresh.sessions

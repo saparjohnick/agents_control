@@ -890,6 +890,47 @@ module AgentsControl
           refute_includes @api.last_text, "don't remember"
         end
 
+        # Typing without a reply continues with whichever session the bot
+        # spoke for last.
+        def test_text_without_a_reply_goes_to_the_session_of_the_last_message
+          tab_a = Session.new(id: "TAB-A", backend: :iterm2, tty: "/dev/ttys030",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/other", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config,
+                              registry: FakeMultiRegistry.new([tab_a, tab_b], backend))
+          @store.put({ "session_id" => "TAB-A", "cwd" => "/tmp/flightlog", "label" => "flightlog" }, key: "last:#{OWNER}")
+
+          router.handle(incoming("continue", chat_id: OWNER))
+
+          assert_equal [["TAB-A", "continue"], ["TAB-A", ""]], backend.calls
+        end
+
+        def test_a_reply_wins_over_the_last_message
+          tab_a = Session.new(id: "TAB-A", backend: :iterm2, tty: "/dev/ttys030",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/other", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config,
+                              registry: FakeMultiRegistry.new([tab_a, tab_b], backend))
+          @store.put({ "session_id" => "TAB-A", "cwd" => "/tmp/flightlog", "label" => "flightlog" }, key: "last:#{OWNER}")
+          @store.put({ "session_id" => "TAB-B", "cwd" => "/tmp/other", "label" => "other" }, key: "reply:#{OWNER}:555")
+
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          assert_equal [["TAB-B", "continue"], ["TAB-B", ""]], backend.calls
+        end
+
+        def test_a_command_is_never_typed_into_the_last_session
+          @store.put({ "session_id" => "TAB-A", "cwd" => "/tmp/flightlog", "label" => "flightlog" }, key: "last:#{OWNER}")
+
+          @router.handle(incoming("/whatisthis", chat_id: OWNER))
+
+          assert_includes @api.last_text, "I don't know that command"
+        end
+
         # A plain shell tab running something interactive (git add -p,
         # an installer prompt, anything reading single-key answers) has
         # to work as a back-and-forth: each reply types into the same

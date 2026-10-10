@@ -109,6 +109,12 @@ module AgentsControl
           assert_equal markup, @api.sent.last[:markup]
         end
 
+        def test_the_last_message_becomes_the_target_of_text_without_a_reply
+          @channel.notify(event(text: "hello"))
+
+          assert_equal event(text: "hello").session_id, @store.get("last:424242")["session_id"]
+        end
+
         # A reply can target any of the chunks, not just the last one —
         # replying to the middle of a long response must not get lost.
         def test_every_chunk_is_a_valid_reply_target

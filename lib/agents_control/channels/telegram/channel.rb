@@ -98,9 +98,11 @@ module AgentsControl
           id = sent.is_a?(Hash) ? sent["message_id"] : nil
           return unless id
 
-          @store.put({ "session_id" => event.session_id, "question_id" => question_id,
-                       "cwd" => event.cwd, "label" => event.label },
-                     ttl: REPLY_TARGET_TTL, key: "reply:#{chat_id}:#{id}")
+          target = { "session_id" => event.session_id, "question_id" => question_id,
+                     "cwd" => event.cwd, "label" => event.label }
+          @store.put(target, ttl: REPLY_TARGET_TTL, key: "reply:#{chat_id}:#{id}")
+          # Where a message sent without a reply goes — see the Router.
+          @store.put(target, ttl: REPLY_TARGET_TTL, key: "last:#{chat_id}")
         end
 
         # A short session tag in the header. Needed so that in a chat
