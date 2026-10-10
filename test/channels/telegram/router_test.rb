@@ -1027,6 +1027,38 @@ module AgentsControl
           assert_includes @api.last_text, "several tabs"
         end
 
+        # The hook's cwd is wherever the agent has cd'd to since; the
+        # tab still reports the directory it was started in.
+        def test_reply_reaches_the_agent_that_moved_into_a_subfolder
+          parent = Session.new(id: "TAB-P", backend: :iterm2, tty: "/dev/ttys030",
+                               cwd: "/tmp", agent: :claude_code)
+          project = Session.new(id: "TAB-V", backend: :iterm2, tty: "/dev/ttys031",
+                                cwd: "/tmp/videodryer", agent: :claude_code)
+          sibling = Session.new(id: "TAB-S", backend: :iterm2, tty: "/dev/ttys032",
+                                cwd: "/tmp/videodryer/ios-old", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config,
+                              registry: FakeMultiRegistry.new([parent, project, sibling], backend))
+          @store.put({ "session_id" => "f4a51c9f", "cwd" => "/tmp/videodryer/ios", "label" => "ios" },
+                     key: "reply:#{OWNER}:555")
+
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          assert_equal [["TAB-V", "continue"], ["TAB-V", ""]], backend.calls
+        end
+
+        def test_reply_never_lands_in_a_plain_shell_above_the_agents_folder
+          shell = Session.new(id: "TAB-SH", backend: :iterm2, tty: "/dev/ttys030", cwd: "/tmp/videodryer")
+          router = Router.new(api: @api, store: @store, config: @config,
+                              registry: FakeMultiRegistry.new([shell], RecordingBackend.new))
+          @store.put({ "session_id" => "f4a51c9f", "cwd" => "/tmp/videodryer/ios", "label" => "ios" },
+                     key: "reply:#{OWNER}:555")
+
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          assert_includes @api.last_text, "couldn't find the tab"
+        end
+
         # ── files from the phone ─────────────────────────────────────────
 
         # A path, never the URL. Telegram serves file bytes from

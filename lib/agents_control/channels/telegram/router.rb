@@ -161,19 +161,44 @@ module AgentsControl
         # match wins there if one exists (the common case: replying to
         # an agent's own notification), otherwise any matching tab does
         # (a plain tab mid-interactive-command has no agent to prefer).
+        #
+        # Returns the session it typed into, or nil once it has said why not.
         def type_into_session(chat_id, target, text)
+          session = session_for(chat_id, target)
+          execute(chat_id, session, text, show_result: !session.agent?) if session
+          session
+        end
+
+        def session_for(chat_id, target)
           exact = @registry.refresh.find(target["session_id"])
-          return execute(chat_id, exact, text, show_result: !exact.agent?) if exact && !exact.terminalless?
+          return exact if exact && !exact.terminalless?
 
-          candidates = @registry.sessions.select { |s| s.cwd == target["cwd"] && !s.terminalless? }
-          agent_matches = candidates.select(&:agent?)
-          matching = agent_matches.empty? ? candidates : agent_matches
+          matching = tabs_for(target["cwd"])
 
-          case matching.size
-          when 0 then say(chat_id, "#{target['label']} isn't waiting anymore, and I couldn't find the tab.")
-          when 1 then execute(chat_id, matching.first, text, show_result: !matching.first.agent?)
-          else say(chat_id, "#{target['label']} has several tabs — use /run NUMBER to pick one.")
-          end
+          return matching.first if matching.size == 1
+
+          say(chat_id, if matching.empty?
+                         "#{target['label']} isn't waiting anymore, and I couldn't find the tab."
+                       else
+                         "#{target['label']} has several tabs — use /run NUMBER to pick one."
+                       end)
+          nil
+        end
+
+        # A hook reports the directory the agent is in now, while the
+        # tab and the process only know the one it was started in — so
+        # an agent that cd'd into a subfolder matches no tab exactly.
+        # The agent in the nearest directory above is that same agent;
+        # a plain shell up there is just a neighbour.
+        def tabs_for(cwd)
+          tabs = @registry.sessions.reject(&:terminalless?)
+
+          same = tabs.select { |s| s.cwd == cwd }
+          return same.select(&:agent?).then { |agents| agents.empty? ? same : agents } unless same.empty?
+
+          above = tabs.select { |s| s.agent? && !s.cwd.to_s.empty? && cwd.to_s.start_with?(File.join(s.cwd, "")) }
+          nearest = above.map { |s| s.cwd.length }.max
+          above.select { |s| s.cwd.length == nearest }
         end
 
         # A file from the phone becomes a file on disk, and the agent is
