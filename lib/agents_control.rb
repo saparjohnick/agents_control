@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "io/console"
+require "monitor"
 require "shellwords"
 
 # The base error is declared before the other files: error classes

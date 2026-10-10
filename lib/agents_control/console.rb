@@ -105,7 +105,7 @@ module AgentsControl
     # The daemon comes up immediately: a console without it is just a
     # window, and the point is to already be connected the moment the tab opens.
     def start_daemon
-      @daemon = Daemon.new(config: @config, store: @store, secrets: @secrets, logger: @out)
+      @daemon = Daemon.new(config: @config, store: @store, secrets: @secrets, logger: daemon_log)
 
       return say("") if @daemon.start
 
@@ -113,6 +113,16 @@ module AgentsControl
       say("The daemon isn't running — the commands below still work.")
       say("")
     end
+
+    # Only puts is ever called on a logger.
+    Interjection = Struct.new(:prompt) do
+      def puts(text = "") = prompt.interject(text)
+    end
+
+    # With a terminal the prompt owns it between commands, so the
+    # daemon's lines go through it; over a pipe there's no raw mode to
+    # work around.
+    def daemon_log = $stdin.tty? ? Interjection.new(editor) : @out
 
     def loop_commands
       while (line = prompt)

@@ -121,6 +121,37 @@ module AgentsControl
       assert_operator shown, :<=, Prompt::WINDOW
     end
 
+    # ── lines from other threads ─────────────────────────────────────
+
+    def test_a_log_line_while_typing_starts_at_the_left_edge_and_keeps_the_line
+      keys = LogMidway.new("ab", "\r")
+      prompt = build(keys)
+      keys.on_pause = -> { prompt.interject("[13:31:38] received photo\n") }
+
+      assert_equal "ab", prompt.read("> ")
+      assert_match(/\r\e\[J\[13:31:38\] received photo\r\n\r\e\[J\r> ab/, @out.string)
+    end
+
+    def test_a_log_line_between_prompts_is_printed_plainly
+      build(Keys.new).interject("[13:31:38] received photo")
+
+      assert_equal "[13:31:38] received photo\n", @out.string
+    end
+
+    # Calls on_pause once, after the first keystroke has been read in full.
+    class LogMidway < Keys
+      attr_accessor :on_pause
+
+      def getbyte
+        if @presses.first&.empty? && on_pause
+          on_pause.call
+          self.on_pause = nil
+        end
+
+        super
+      end
+    end
+
     private
 
     # Every argument is a separate call.

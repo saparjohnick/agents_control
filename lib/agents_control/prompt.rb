@@ -19,6 +19,23 @@ module AgentsControl
       @completer = completer || ->(_word) { [] }
       @describer = describer || ->(_item) { nil }
       @history = []
+      # Reentrant: interject redraws the line, and so does every keystroke.
+      @lock = Monitor.new
+    end
+
+    # A line from another thread — the daemon logs while someone types.
+    # Raw mode turns off the terminal's own "\n" → "\r\n", so printed
+    # as-is every line started where the previous one ended and landed
+    # on top of the line being typed. It goes above that line instead,
+    # and the line is drawn again underneath.
+    def interject(text)
+      @lock.synchronize do
+        return @out.puts(text) unless @reading
+
+        erase_drawn
+        @out.print("#{text.to_s.chomp.gsub("\n", "\r\n")}\r\n")
+        render
+      end
     end
 
     # Returns the entered line, or nil if input closed (Ctrl-D).
@@ -32,12 +49,25 @@ module AgentsControl
       @history_at = @history.size
       @result = nil
 
-      render
-      @in.raw { loop { break if handle(read_key) == :done } }
+      @lock.synchronize do
+        render
+        @reading = true
+      end
+      # The key is read outside the lock: waiting for one must not hold
+      # back a log line.
+      @in.raw do
+        loop do
+          key = read_key
+          break if @lock.synchronize { handle(key) } == :done
+        end
+      end
 
       @result
     ensure
-      finish
+      @lock.synchronize do
+        @reading = false
+        finish
+      end
     end
 
     private
