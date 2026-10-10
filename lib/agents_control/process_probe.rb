@@ -27,7 +27,12 @@ module AgentsControl
       # i.e. what the user is currently interacting with.
       def foreground? = stat.to_s.include?("+")
       def name = File.basename(command.to_s)
-      def agent = AGENT_BINARIES[name]
+
+      # Claude Code retitles its own process to `Claude` partway through
+      # a long session, so an exact match loses the tab. The desktop app
+      # is also called `Claude`, but it never has a terminal — that's
+      # what keeps it from passing for an agent here.
+      def agent = AGENT_BINARIES[name] || (terminal? ? AGENT_BINARIES[name.downcase] : nil)
       def agent? = !agent.nil?
       def terminal? = tty != NO_TTY
     end

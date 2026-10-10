@@ -44,6 +44,21 @@ module AgentsControl
       assert_equal "claude", vscode.name
     end
 
+    def test_finds_agent_that_retitled_itself
+      probe = probe_for(<<~PS)
+        ttys010   2790 S+   Claude
+        ttys010   4417 S+   /Library/Developer/CommandLineTools/usr/bin/sourcekit-lsp
+      PS
+
+      assert_equal :claude_code, probe.agent_in("ttys010").agent
+    end
+
+    def test_desktop_app_is_not_an_agent
+      probe = probe_for("??         812 S    /Applications/Claude.app/Contents/MacOS/Claude\n")
+
+      assert_empty probe.terminalless_agents
+    end
+
     def test_collects_agents_that_have_no_terminal_at_all
       pids = @probe.terminalless_agents.map(&:pid)
 
@@ -75,5 +90,9 @@ module AgentsControl
       assert_empty probe.processes
       assert_nil probe.agent_in("ttys017")
     end
+
+    private
+
+    def probe_for(ps) = ProcessProbe.new(executor: FakeExecutor.new("-o" => ps)).refresh
   end
 end
