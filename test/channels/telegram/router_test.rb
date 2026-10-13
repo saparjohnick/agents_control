@@ -1141,6 +1141,35 @@ module AgentsControl
           assert_includes @api.last_text, "b.txt"
         end
 
+        def test_a_file_without_a_reply_goes_to_the_agent_that_spoke_last
+          agent = Session.new(id: "TAB-V", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/videodryer", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config,
+                              registry: FakeMultiRegistry.new([agent], backend),
+                              inbox: Sequence.new("/tmp/inbox/a.png", "/tmp/inbox/b.png"))
+          @store.put({ "session_id" => "TAB-V", "cwd" => "/tmp/videodryer", "label" => "videodryer" },
+                     key: "last:#{OWNER}")
+
+          router.handle(in_album(with_document("a.png", caption: "look", chat_id: OWNER)))
+          router.handle(in_album(with_document("b.png", chat_id: OWNER)))
+
+          assert_includes backend.calls, ["TAB-V", "look /tmp/inbox/a.png"]
+          assert_includes backend.calls, ["TAB-V", "/tmp/inbox/b.png"]
+        end
+
+        def test_a_file_without_a_reply_is_not_typed_into_a_shell_that_spoke_last
+          executor, router = shell_tab(inbox: FakeInbox.new("/tmp/inbox/notes.txt"))
+          shell = router.instance_variable_get(:@registry).sessions.find { |s| !s.agent? }
+          @store.put({ "session_id" => shell.id, "cwd" => shell.cwd, "label" => shell.label },
+                     key: "last:#{OWNER}")
+
+          router.handle(with_document("notes.txt", chat_id: OWNER))
+
+          refute_includes typed(executor), "/tmp/inbox/notes.txt"
+          assert_includes @api.last_text, "Saved"
+        end
+
         # Guessing a target for a file is how it gets pasted into the
         # wrong project. With nothing to go on, hand back the path.
         def test_a_file_with_no_target_is_only_saved

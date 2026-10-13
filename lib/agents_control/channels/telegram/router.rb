@@ -220,11 +220,13 @@ module AgentsControl
           say(chat_id, "Couldn't save that file: #{@api.redact(e.message)}")
         end
 
-        # Three ways to say where it goes, in order of how explicit they
-        # are: a caption naming a tab, a reply to something already tied
-        # to a session, or neither — in which case the path is just
-        # handed back, since guessing at a target for a file is how it
-        # ends up pasted into the wrong project.
+        # Ways to say where it goes, in order of how explicit they are: a
+        # caption naming a tab, a reply to something already tied to a
+        # session, the rest of an album, or the session that spoke last —
+        # for an agent only, since a bare path typed into a shell is a
+        # command, not a file handed over. With none of those the path is
+        # just handed back: guessing further is how a file ends up pasted
+        # into the wrong project.
         def deliver_file(chat_id, message, path)
           caption = message["caption"].to_s.strip
           album = album_key(chat_id, message)
@@ -243,6 +245,16 @@ module AgentsControl
 
           if (session = album_session(album))
             return execute(chat_id, session, with_path("", path))
+          end
+
+          if (last = @store.get(last_target_key(chat_id)))
+            session = session_for(chat_id, last)
+            return unless session
+
+            if session.agent?
+              execute(chat_id, session, with_path(caption, path))
+              return remember_album(album, session)
+            end
           end
 
           say(chat_id, "Saved:\n\n`#{path}`\n\nReply to a session's message with a file to hand it " \
