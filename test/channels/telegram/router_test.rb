@@ -1158,6 +1158,27 @@ module AgentsControl
           assert_includes backend.calls, ["TAB-V", "/tmp/inbox/b.png"]
         end
 
+        # Not only documents: whatever Telegram calls it, the path is what
+        # reaches the agent.
+        def test_every_kind_of_attachment_without_a_reply_goes_to_the_agent_that_spoke_last
+          Inbox::KINDS.each do |kind|
+            agent = Session.new(id: "TAB-V", backend: :iterm2, tty: "/dev/ttys031",
+                                cwd: "/tmp/videodryer", agent: :claude_code)
+            backend = RecordingBackend.new
+            router = Router.new(api: @api, store: @store, config: @config,
+                                registry: FakeMultiRegistry.new([agent], backend),
+                                inbox: FakeInbox.new("/tmp/inbox/#{kind}.bin"))
+            @store.put({ "session_id" => "TAB-V", "cwd" => "/tmp/videodryer", "label" => "videodryer" },
+                       key: "last:#{OWNER}")
+            descriptor = { "file_id" => "abc", "file_size" => 2048 }
+            descriptor = [descriptor] if kind == "photo"
+
+            router.handle({ "message" => { "chat" => { "id" => OWNER }, "message_id" => 901, kind => descriptor } })
+
+            assert_includes backend.calls, ["TAB-V", "/tmp/inbox/#{kind}.bin"], kind
+          end
+        end
+
         def test_a_file_without_a_reply_is_not_typed_into_a_shell_that_spoke_last
           executor, router = shell_tab(inbox: FakeInbox.new("/tmp/inbox/notes.txt"))
           shell = router.instance_variable_get(:@registry).sessions.find { |s| !s.agent? }
