@@ -3,6 +3,19 @@
 Newest first. While the major is 0, a minor bump may change behaviour —
 entries say so where it does.
 
+## 0.4.1 — 2026-10-14
+
+### Fixed
+
+- **A photo or file sent without a reply now goes to the session that
+  spoke last**, the same as text does since 0.4.0. It was only saved,
+  and the path handed back, so it had to be sent again as a reply. The
+  caption goes with it, and so does the rest of an album. Photos, video,
+  audio, voice messages, video notes and animations are all covered.
+  Only an agent receives it: a bare path typed into a shell is a
+  command, not a file handed over, so a shell still just gets the file
+  saved.
+
 ## 0.4.0 — 2026-10-10
 
 ### Changed
