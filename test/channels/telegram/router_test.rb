@@ -1047,6 +1047,20 @@ module AgentsControl
           assert_equal [["TAB-V", "continue"], ["TAB-V", ""]], backend.calls
         end
 
+        def test_reply_to_an_agents_message_never_lands_in_a_shell_left_in_its_folder
+          shell = Session.new(id: "TAB-SH", backend: :iterm2, tty: "/dev/ttys030", cwd: "/tmp/flightlog")
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config,
+                              registry: FakeMultiRegistry.new([shell], backend))
+          @store.put({ "session_id" => "TAB-GONE", "cwd" => "/tmp/flightlog", "label" => "flightlog",
+                       "from_agent" => true }, key: "reply:#{OWNER}:555")
+
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          assert_empty backend.calls
+          assert_includes @api.last_text, "couldn't find the tab"
+        end
+
         def test_reply_never_lands_in_a_plain_shell_above_the_agents_folder
           shell = Session.new(id: "TAB-SH", backend: :iterm2, tty: "/dev/ttys030", cwd: "/tmp/videodryer")
           router = Router.new(api: @api, store: @store, config: @config,

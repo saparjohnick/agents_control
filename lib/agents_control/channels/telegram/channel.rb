@@ -136,7 +136,7 @@ module AgentsControl
           return unless id
 
           target = { "session_id" => event.session_id, "question_id" => question_id,
-                     "cwd" => event.cwd, "label" => event.label }
+                     "cwd" => event.cwd, "label" => event.label, "from_agent" => true }
           @store.put(target, ttl: REPLY_TARGET_TTL, key: "reply:#{chat_id}:#{id}")
           # Where a message sent without a reply goes — see the Router.
           @store.put(target, ttl: REPLY_TARGET_TTL, key: "last:#{chat_id}")

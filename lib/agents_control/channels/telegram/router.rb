@@ -173,7 +173,7 @@ module AgentsControl
           exact = @registry.refresh.find(target["session_id"])
           return exact if exact && !exact.terminalless?
 
-          matching = tabs_for(target["cwd"])
+          matching = tabs_for(target["cwd"], agents_only: target["from_agent"])
 
           return matching.first if matching.size == 1
 
@@ -190,11 +190,18 @@ module AgentsControl
         # an agent that cd'd into a subfolder matches no tab exactly.
         # The agent in the nearest directory above is that same agent;
         # a plain shell up there is just a neighbour.
-        def tabs_for(cwd)
+        #
+        # A message that came from an agent is answered only to an agent:
+        # once that agent is gone, a shell left in the same folder is not
+        # its successor, and the reply would be run there as a command.
+        def tabs_for(cwd, agents_only: false)
           tabs = @registry.sessions.reject(&:terminalless?)
 
           same = tabs.select { |s| s.cwd == cwd }
-          return same.select(&:agent?).then { |agents| agents.empty? ? same : agents } unless same.empty?
+          unless same.empty?
+            agents = same.select(&:agent?)
+            return agents.empty? && !agents_only ? same : agents
+          end
 
           above = tabs.select { |s| s.agent? && !s.cwd.to_s.empty? && cwd.to_s.start_with?(File.join(s.cwd, "")) }
           nearest = above.map { |s| s.cwd.length }.max
