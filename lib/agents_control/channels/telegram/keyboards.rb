@@ -62,6 +62,16 @@ module AgentsControl
           ]] }
         end
 
+        # How many number buttons fit on one row before Telegram wraps it
+        # wider than a phone screen.
+        NUMBERS_PER_ROW = 5
+
+        # The same numbered list as render_list, but with the numbers
+        # also tappable — each one does what /focus N would.
+        def tabs_markup(sessions, universe: sessions)
+          { inline_keyboard: focus_buttons(sessions, universe: universe) + list_actions.fetch(:inline_keyboard) }
+        end
+
         # Buttons under /start and /help — the full command list isn't
         # always visible in the Telegram UI (the menu button is easy to
         # miss among everything else), so this keeps it available at any
@@ -103,6 +113,13 @@ module AgentsControl
         end
 
         private
+
+        def focus_buttons(sessions, universe: sessions)
+          numbers = numbered(universe)
+          sessions.each_slice(NUMBERS_PER_ROW).map do |group|
+            group.map { |session| button(numbers.fetch(session.id), action: "focus", session: session) }
+          end
+        end
 
         def index_key(chat_id) = "index:#{chat_id}"
 

@@ -357,16 +357,17 @@ module AgentsControl
 
         def tabs_list(chat_id)
           universe = @registry.refresh.sessions
-          list(chat_id, universe, "🖥 All tabs", universe: universe)
+          list(chat_id, universe, "🖥 All tabs", universe: universe, with_focus_buttons: true)
         end
 
-        def list(chat_id, sessions, title, universe: sessions)
+        def list(chat_id, sessions, title, universe: sessions, with_focus_buttons: false)
           if sessions.empty?
             return say(chat_id, "#{title}\n\nEmpty.", markup: @keyboards.list_actions)
           end
 
+          markup = with_focus_buttons ? @keyboards.tabs_markup(sessions, universe: universe) : @keyboards.list_actions
           say(chat_id, @keyboards.render_list(sessions, universe: universe, chat_id: chat_id, title: title),
-              markup: @keyboards.list_actions)
+              markup: markup)
         end
 
         def screen(chat_id, argument)
@@ -376,7 +377,8 @@ module AgentsControl
         def focus(chat_id, argument)
           with_session(chat_id, argument) do |session|
             ok = @registry.backend_for(session).focus(session.id)
-            say(chat_id, ok ? "Switched to #{session.label}." : "Couldn't switch.")
+            sent = say(chat_id, ok ? "Switched to #{session.label}." : "Couldn't switch.")
+            remember_reply(chat_id, sent, session) if ok
           end
         end
 
@@ -1019,7 +1021,8 @@ module AgentsControl
 
         def focus_session(chat_id, session)
           @registry.backend_for(session).focus(session.id)
-          say(chat_id, "Switched to #{session.label}.")
+          sent = say(chat_id, "Switched to #{session.label}.")
+          remember_reply(chat_id, sent, session)
         end
 
         # The screen is the first choice, not a fallback: it shows what's

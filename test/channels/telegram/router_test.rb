@@ -77,6 +77,35 @@ module AgentsControl
           assert_includes unescape_markdown(@api.last_text), "mobile-app"
         end
 
+        # /tabs gets a number button per row so a tab can be reached
+        # with a tap — /agents doesn't, to keep this change scoped to
+        # what was asked for.
+        def test_tabs_list_has_a_tappable_button_for_every_number_shown
+          @router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of("backend_api")
+
+          assert button_key(@api.sent.last, number), "no button labelled #{number}"
+        end
+
+        def test_tapping_a_tab_number_focuses_that_session
+          @router.handle(incoming("/tabs", chat_id: OWNER))
+          number = number_of("backend_api")
+          key = button_key(@api.sent.last, number)
+
+          @router.handle(pressed(key, chat_id: OWNER))
+
+          text = unescape_markdown(@api.last_text)
+          assert_includes text, "Switched to"
+          assert_includes text, "backend_api"
+        end
+
+        def test_agents_list_has_no_number_buttons
+          @router.handle(incoming("/agents", chat_id: OWNER))
+
+          buttons = @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] }
+          refute(buttons.any? { |text| text.match?(/\A\d+\z/) })
+        end
+
         # The number goes out escaped ("3\.", not "3.") — the period is
         # one of the characters MarkdownV2 requires escaped outside code,
         # confirmed by a direct request to the real Bot API.
