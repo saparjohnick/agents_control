@@ -3,6 +3,56 @@
 Newest first. While the major is 0, a minor bump may change behaviour —
 entries say so where it does.
 
+## 0.5.0 — 2026-11-06
+
+### Added
+
+- **`/reload`** restarts the daemon into updated code. A preflight
+  proves the updated code at least loads before committing to it —
+  the restart tears down hooks and the bot first, so there's no way
+  back if the new code can't even boot.
+- **`/getfile`** sends a session's recently touched file straight back
+  — a tab number lists the recent ones to pick from, instead of
+  needing the path.
+- **A tappable number button under every `/tabs` entry** switches to
+  and starts talking to that session, the same as `/run N` but without
+  typing it.
+- **Ambiguous sessions are resolved by a button, not a bare error.**
+  Two real tabs sharing a directory can't be told apart from Claude
+  Code's hook payload alone — it carries no OS-level identifier.
+  Tapping the right one now teaches the mapping, so every later
+  message from that same agent resolves on its own from then on.
+- **A failed file send or download offers a "Try again" button**
+  instead of just reporting the error — for a dropped connection or
+  Telegram rate-limiting, not for a file that's simply too large or an
+  outright rejection, where retrying would just fail the same way.
+- **`daemon.auto_reload`**: the daemon notices when the code on disk
+  has already been updated — by hand, or by an agent — and restarts
+  into it, so that doesn't also have to be remembered separately. On
+  by default.
+
+### Changed
+
+- **A slow file download no longer blocks the rest of the chat.** It
+  used to run inline, holding up every other message queued behind it;
+  it now runs on its own queue.
+- **Fetching and pulling new code on its own (`daemon.auto_update`) is
+  now off by default**, separate from `auto_reload` above. It's the
+  one that decides, unattended, to trust whatever's newest upstream —
+  `auto_reload` never decides anything on its own, it only notices
+  code that's already there.
+
+### Fixed
+
+- **The daemon crash-looped under launchd on any non-ASCII byte** (a
+  Cyrillic character, for instance) in `~/.claude/settings.json`.
+  launchd's minimal environment has no `LANG`/`LC_ALL`, so Ruby's
+  external encoding defaulted to US-ASCII there.
+- **A manually launched daemon could crash with `cannot load such file
+  — thor (LoadError)`** on `/reload`, from relying on the ambient gem
+  environment instead of the project's own bundle. The entry point now
+  pins itself to `vendor/bundle` whenever one is present.
+
 ## 0.4.1 — 2026-10-14
 
 ### Fixed
