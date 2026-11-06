@@ -65,6 +65,15 @@ module AgentsControl
       entries.map { |entry| "#{prefix(entry[:role])} #{entry[:text]}" }.join("\n\n")
     end
 
+    SINGLE_FILE_TOOLS = %w[Read Edit Write NotebookEdit].freeze
+
+    # The N most recently touched files, most recent first and deduplicated.
+    def recent_files(count = 2)
+      return [] unless exists?
+
+      touched_file_paths(tail).reverse.uniq.first(count)
+    end
+
     private
 
     def tail
@@ -110,6 +119,22 @@ module AgentsControl
         when "tool_use" then "→ #{block['name']}"
         end
       end.join("\n").strip
+    end
+
+    def touched_file_paths(raw)
+      raw.each_line.flat_map do |line|
+        blocks = JSON.parse(line).dig("message", "content")
+        blocks.is_a?(Array) ? blocks.filter_map { |block| touched_file_path(block) } : []
+      rescue JSON::ParserError
+        []
+      end
+    end
+
+    def touched_file_path(block)
+      return nil unless block["type"] == "tool_use" && SINGLE_FILE_TOOLS.include?(block["name"])
+
+      path = block.dig("input", "file_path")
+      path unless path.to_s.empty?
     end
 
     def prefix(role)

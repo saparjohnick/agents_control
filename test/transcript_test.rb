@@ -66,6 +66,44 @@ module AgentsControl
       assert_equal "x" * 5000, Transcript.new(@path).render(1).delete_prefix("🤖 ")
     end
 
+    # ── recently touched files ──────────────────────────────────────────────
+
+    def test_recent_files_are_most_recent_first
+      File.write(@path, Fixtures::TRANSCRIPT_WITH_FILES)
+
+      assert_equal ["#{Fixtures::CWD}/Gemfile", "#{Fixtures::CWD}/app.rb"],
+                   Transcript.new(@path).recent_files
+    end
+
+    # Gemfile is read twice — it must take one slot, at its latest
+    # touch, not crowd out app.rb by appearing as two entries.
+    def test_a_file_touched_twice_only_takes_one_slot
+      File.write(@path, Fixtures::TRANSCRIPT_WITH_FILES)
+
+      files = Transcript.new(@path).recent_files(10)
+
+      assert_equal 2, files.size
+    end
+
+    # Bash runs a command, not a file — it must never be mistaken for one.
+    def test_tool_calls_with_no_file_are_not_recent_files
+      File.write(@path, Fixtures::TRANSCRIPT_WITH_FILES)
+
+      refute_includes Transcript.new(@path).recent_files(10), "bundle install"
+    end
+
+    def test_recent_files_respects_the_requested_count
+      File.write(@path, Fixtures::TRANSCRIPT_WITH_FILES)
+
+      assert_equal 1, Transcript.new(@path).recent_files(1).size
+    end
+
+    def test_recent_files_on_a_missing_transcript_is_empty
+      transcript = Transcript.new(File.join(@dir, "no-such-file.jsonl"))
+
+      assert_empty transcript.recent_files
+    end
+
     # ── lookup by working directory ────────────────────────────────────────
 
     # Claude Code lays out histories in a directory named after the

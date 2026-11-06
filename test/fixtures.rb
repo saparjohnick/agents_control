@@ -162,5 +162,28 @@ module AgentsControl
                        "content" => [{ "type" => "text",
                                        "text" => "Should I continue, or show the plan?" }] } }
     ].map { |entry| JSON.generate(entry) }.join("\n")
+
+    # A transcript whose tool calls touch actual files — Gemfile is
+    # read, then read again later, after app.rb was edited and a Bash
+    # call that names no file in between.
+    TRANSCRIPT_WITH_FILES = [
+      { "type" => "user", "message" => { "role" => "user", "content" => "fix the build" } },
+      { "type" => "assistant",
+        "message" => { "role" => "assistant",
+                       "content" => [{ "type" => "tool_use", "name" => "Read",
+                                       "input" => { "file_path" => "#{CWD}/Gemfile" } }] } },
+      { "type" => "assistant",
+        "message" => { "role" => "assistant",
+                       "content" => [{ "type" => "tool_use", "name" => "Edit",
+                                       "input" => { "file_path" => "#{CWD}/app.rb" } }] } },
+      { "type" => "assistant",
+        "message" => { "role" => "assistant",
+                       "content" => [{ "type" => "tool_use", "name" => "Bash",
+                                       "input" => { "command" => "bundle install" } }] } },
+      { "type" => "assistant",
+        "message" => { "role" => "assistant",
+                       "content" => [{ "type" => "tool_use", "name" => "Read",
+                                       "input" => { "file_path" => "#{CWD}/Gemfile" } }] } }
+    ].map { |entry| JSON.generate(entry) }.join("\n")
   end
 end

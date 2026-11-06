@@ -42,6 +42,7 @@ module AgentsControl
           ["away", "intercept agent questions"],
           ["settings", "settings"],
           ["context", "the agent's recent messages", "N"],
+          ["getfile", "send a file — a tab number lists recent ones", "[N|path]"],
           ["screen", "show a tab's screen", "N"],
           ["focus", "switch to a tab", "N"],
           ["run", "run a command in a tab", "N command"],
@@ -340,6 +341,7 @@ module AgentsControl
           when "/away" then toggle_away(chat_id, argument)
           when "/settings" then show_settings(chat_id)
           when "/context" then context(chat_id, argument)
+          when "/getfile" then getfile(chat_id, argument)
           when "/reload" then reload_daemon(chat_id)
           when "/status" then status(chat_id)
           else say(chat_id, "I don't know that command.\n\n#{HELP}")
@@ -773,6 +775,47 @@ module AgentsControl
           @reload_trigger.call
         end
 
+        RECENT_FILES_OFFERED = 2
+        TAB_NUMBER = /\A\d+\z/
+
+        def getfile(chat_id, argument)
+          argument = argument.to_s.strip
+          return send_file(chat_id, argument) unless argument.empty? || argument.match?(TAB_NUMBER)
+          return with_session(chat_id, argument) { |session| offer_recent_files(chat_id, session) } unless argument.empty?
+
+          target = @store.get(last_target_key(chat_id))
+          return say(chat_id, "No active conversation yet — try /getfile NUMBER or /getfile PATH.") unless target
+
+          session = session_for(chat_id, target)
+          offer_recent_files(chat_id, session) if session
+        end
+
+        def offer_recent_files(chat_id, session)
+          transcript = Transcript.for_cwd(session.cwd, root: transcript_root)
+          paths = transcript.recent_files(RECENT_FILES_OFFERED)
+
+          return say(chat_id, "No recently touched files found for #{session.label}.") if paths.empty?
+
+          markup = { inline_keyboard: paths.map { |path| [file_button(path)] } }
+          say(chat_id, "📄 Recent files in #{session.label}:", markup: markup)
+        end
+
+        def file_button(path)
+          { text: File.basename(path)[0, 60],
+            callback_data: @store.put({ "action" => "getfile", "path" => path }, ttl: 600) }
+        end
+
+        # No path restricted here, same as /run: anyone who can reach
+        # this chat can already `cat` anything via a shell.
+        def send_file(chat_id, path)
+          expanded = File.expand_path(path)
+          return say(chat_id, "No such file:\n\n`#{path}`") unless File.file?(expanded)
+
+          @api.send_document(chat_id: chat_id, path: expanded)
+        rescue Api::Error, SystemCallError, ArgumentError => e
+          say(chat_id, "Couldn't send that file: #{@api.redact(e.message)}")
+        end
+
         # Interception is turned on explicitly: while a human is at the
         # keyboard, they'll answer in the terminal faster themselves, and
         # a busy hook keeps the dialog from ever reaching the screen at all.
@@ -889,6 +932,7 @@ module AgentsControl
           when "answer" then answer_question(chat_id, payload)
           when "compose" then start_compose(chat_id, payload)
           when "transcript" then show_transcript(chat_id, payload)
+          when "getfile" then send_file(chat_id, payload["path"])
           when "setting" then change_setting(chat_id, payload)
           when "menu_choice" then choose_menu_option(chat_id, payload)
           when "passphrase_wizard" then start_wizard(chat_id)

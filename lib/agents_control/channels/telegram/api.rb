@@ -5,6 +5,7 @@ require "openssl"
 require "timeout"
 require "json"
 require "uri"
+require "securerandom"
 
 module AgentsControl
   module Channels
@@ -95,6 +96,23 @@ module AgentsControl
                  chat_id: chat_id, text: text, parse_mode: parse_mode,
                  reply_markup: reply_markup && JSON.generate(reply_markup)
                })
+        end
+
+        # Telegram's own cap on a bot's multipart upload.
+        MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+        def send_document(chat_id:, path:, caption: nil)
+          size = File.size(path)
+          if size > MAX_UPLOAD_BYTES
+            raise Error, "sendDocument: #{File.basename(path)} is larger than Telegram allows a bot to upload"
+          end
+
+          response = @http.post_file(url_for("sendDocument"), compact({ chat_id: chat_id, caption: caption }),
+                                      field: "document", path: path, filename: File.basename(path),
+                                      read_timeout: DOWNLOAD_TIMEOUT)
+          parse(response, "sendDocument")
+        rescue Http::NetworkError => e
+          raise Unavailable, redact(e.message)
         end
 
         def edit_message_text(chat_id:, message_id:, text:, reply_markup: nil)
@@ -242,6 +260,23 @@ module AgentsControl
           raise NetworkError, e.message
         end
 
+        # multipart/form-data, for endpoints that take an attached file
+        # rather than a URL or a file_id (sendDocument).
+        def post_file(uri, fields, field:, path:, filename:, read_timeout:)
+          # Random per call: a fixed boundary could appear inside the file's own bytes.
+          boundary = SecureRandom.hex(16)
+          request = Net::HTTP::Post.new(uri)
+          request["Content-Type"] = "multipart/form-data; boundary=#{boundary}"
+          request.body = multipart_body(boundary, fields, field, path, filename)
+
+          Net::HTTP.start(uri.host, uri.port,
+                          use_ssl: true, open_timeout: 10, read_timeout: read_timeout) do |http|
+            http.request(request)
+          end
+        rescue *NETWORK_ERRORS => e
+          raise NetworkError, e.message
+        end
+
         # SystemCallError as a family rather than a list of Errno
         # constants. The list was a bet on knowing every errno a network
         # stack can raise, and it lost: Errno::EADDRNOTAVAIL — "can't
@@ -253,6 +288,33 @@ module AgentsControl
         NETWORK_ERRORS = [
           SystemCallError, SocketError, Timeout::Error, OpenSSL::SSL::SSLError, IOError
         ].freeze
+
+        private
+
+        CRLF = "\r\n"
+
+        # `.b` relabels each piece as binary without touching its bytes
+        # — appending a UTF-8 caption straight onto binary file bytes
+        # otherwise raises Encoding::CompatibilityError.
+        def multipart_body(boundary, fields, field, path, filename)
+          body = "".b
+          fields.each { |name, value| body << text_part(boundary, name, value) }
+          body << file_part(boundary, field, filename)
+          body << File.binread(path)
+          body << "#{CRLF}--#{boundary}--#{CRLF}".b
+          body
+        end
+
+        def text_part(boundary, name, value)
+          "--#{boundary}#{CRLF}Content-Disposition: form-data; name=\"#{name}\"#{CRLF}#{CRLF}#{value}#{CRLF}".b
+        end
+
+        def file_part(boundary, field, filename)
+          "--#{boundary}#{CRLF}Content-Disposition: form-data; name=\"#{field}\"; " \
+            "filename=\"#{escape_header_value(filename)}\"#{CRLF}Content-Type: application/octet-stream#{CRLF}#{CRLF}".b
+        end
+
+        def escape_header_value(filename) = filename.to_s.delete("\r\n").gsub('"', "'")
       end
     end
   end

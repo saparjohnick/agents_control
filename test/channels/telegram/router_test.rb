@@ -854,6 +854,100 @@ module AgentsControl
           assert_equal 80, sent.map { |m| m[:text] }.join.scan(/line \d+/).size
         end
 
+        # ── /reload ───────────────────────────────────────────────────────
+
+        def test_reload_replies_then_fires_the_trigger
+          fired = false
+          router = build_router(reload_trigger: -> { fired = true })
+
+          router.handle(incoming("/reload", chat_id: OWNER))
+
+          assert fired
+          assert_includes @api.last_text, "Restarting"
+        end
+
+        # ── /getfile ──────────────────────────────────────────────────────
+
+        def test_getfile_with_a_path_sends_that_file
+          file = File.join(@dir, "report.csv")
+          File.write(file, "a,b,c")
+
+          @router.handle(incoming("/getfile #{file}", chat_id: OWNER))
+
+          assert_equal [{ chat_id: OWNER, path: file, caption: nil }], @api.documents
+        end
+
+        def test_getfile_with_no_such_path_says_so_without_touching_the_api
+          @router.handle(incoming("/getfile /no/such/file.txt", chat_id: OWNER))
+
+          assert_empty @api.documents
+          assert_includes @api.last_text, "No such file"
+        end
+
+        def test_getfile_with_no_argument_and_no_active_conversation_says_so
+          @router.handle(incoming("/getfile", chat_id: OWNER))
+
+          assert_includes @api.last_text, "No active conversation"
+        end
+
+        # A tab number lists its recently touched files as buttons
+        # instead of sending anything — Gemfile's later (second) touch
+        # in the fixture puts it ahead of app.rb, and the one-off Bash
+        # call with no file attached is never offered as a button.
+        def test_getfile_with_a_tab_number_lists_its_recent_files_as_buttons
+          project = File.join(@dir, "projects", Transcript.slug("/Users/devbox/projects/backend_api"))
+          FileUtils.mkdir_p(project)
+          File.write(File.join(project, "s.jsonl"), Fixtures::TRANSCRIPT_WITH_FILES)
+          router = build_router(config: config_with_transcripts)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/getfile #{number}", chat_id: OWNER))
+
+          labels = @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] }
+          assert_equal %w[Gemfile app.rb], labels
+        end
+
+        def test_getfile_with_no_recent_files_says_so
+          router = build_router(config: config_with_transcripts)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+
+          router.handle(incoming("/getfile #{number}", chat_id: OWNER))
+
+          assert_includes @api.last_text, "No recently touched files"
+        end
+
+        # With no number given, the session of the ongoing conversation
+        # is used — the same "last target" a plain reply-less message
+        # already lands on.
+        def test_getfile_with_no_argument_uses_the_active_conversation
+          project = File.join(@dir, "projects", Transcript.slug("/Users/devbox/projects/backend_api"))
+          FileUtils.mkdir_p(project)
+          File.write(File.join(project, "s.jsonl"), Fixtures::TRANSCRIPT_WITH_FILES)
+          router = build_router(config: config_with_transcripts)
+          router.handle(incoming("/agents", chat_id: OWNER))
+          number = number_of_in(@api.last_text, "backend_api")
+          router.handle(incoming("/context #{number}", chat_id: OWNER))
+
+          router.handle(incoming("/getfile", chat_id: OWNER))
+
+          labels = @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] }
+          assert_equal %w[Gemfile app.rb], labels
+        end
+
+        # Tapping a recent-file button sends exactly that path, the same
+        # as typing /getfile PATH by hand.
+        def test_tapping_a_recent_file_button_sends_it
+          file = File.join(@dir, "notes.txt")
+          File.write(file, "hi")
+          key = @store.put({ "action" => "getfile", "path" => file })
+
+          @router.handle(pressed(key, chat_id: OWNER))
+
+          assert_equal [{ chat_id: OWNER, path: file, caption: nil }], @api.documents
+        end
+
         # ── replies to service messages ────────────────────────────────
 
         # /context shows the transcript, and must work the same way /run

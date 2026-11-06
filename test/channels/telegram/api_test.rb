@@ -150,6 +150,111 @@ module AgentsControl
 
           assert_equal %w[message callback_query], http.calls.last[:params][:allowed_updates]
         end
+
+        # ── sendDocument ───────────────────────────────────────────────────
+
+        def test_send_document_attaches_the_file_as_a_multipart_field
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "notes.txt")
+            File.write(path, "hello")
+            http = FakeHttp.new(FakeHttp.ok({}))
+
+            Api.new(TOKEN, http: http).send_document(chat_id: 1, path: path)
+
+            call = http.file_calls.last
+            assert_equal "document", call[:field]
+            assert_equal path, call[:path]
+            assert_equal "notes.txt", call[:filename]
+            assert_equal 1, call[:fields][:chat_id]
+          end
+        end
+
+        def test_send_document_omits_a_nil_caption
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "notes.txt")
+            File.write(path, "hello")
+            http = FakeHttp.new(FakeHttp.ok({}))
+
+            Api.new(TOKEN, http: http).send_document(chat_id: 1, path: path)
+
+            refute_includes http.file_calls.last[:fields].keys, :caption
+          end
+        end
+
+        # Checked before the file is ever read into memory for the
+        # request body — Telegram's own cap, not ours to raise. A
+        # truncated (sparse) file reaches the right size without
+        # actually writing 50MB to disk for this one assertion.
+        def test_send_document_refuses_a_file_too_large_to_upload
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "huge.bin")
+            File.write(path, "")
+            File.truncate(path, Api::MAX_UPLOAD_BYTES + 1)
+            http = FakeHttp.new
+            api = Api.new(TOKEN, http: http)
+
+            error = assert_raises(Api::Error) { api.send_document(chat_id: 1, path: path) }
+
+            assert_includes error.message, "larger than Telegram allows"
+            assert_empty http.file_calls
+          end
+        end
+
+        def test_send_document_network_failure_becomes_unavailable
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "notes.txt")
+            File.write(path, "hello")
+            http = FakeHttp.new(Http::NetworkError.new("connection reset"))
+
+            assert_raises(Api::Unavailable) { Api.new(TOKEN, http: http).send_document(chat_id: 1, path: path) }
+          end
+        end
+      end
+
+      # The one piece of hand-rolled protocol code that never runs
+      # through FakeHttp (it stands in for Http everywhere else in this
+      # file) — exercised directly here instead.
+      class HttpMultipartTest < Minitest::Test
+        def test_body_frames_fields_and_the_file_with_the_boundary
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "notes.txt")
+            File.write(path, "file bytes")
+
+            body = Http.new.send(:multipart_body, "BOUND", { chat_id: 1 }, "document", path, "notes.txt")
+
+            assert_includes body, "--BOUND\r\n"
+            assert_includes body, "name=\"chat_id\"\r\n\r\n1\r\n"
+            assert_includes body, "name=\"document\"; filename=\"notes.txt\"\r\n"
+            assert_includes body, "file bytes"
+            assert body.end_with?("--BOUND--\r\n")
+          end
+        end
+
+        # A caption typed on a phone is ordinary UTF-8, often non-ASCII
+        # — concatenating it onto the binary file bytes must not raise
+        # Encoding::CompatibilityError.
+        def test_body_accepts_a_non_ascii_field_value
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "notes.txt")
+            File.write(path, "x")
+
+            body = Http.new.send(:multipart_body, "BOUND", { caption: "привет" }, "document", path, "notes.txt")
+
+            assert_includes body, "привет".b
+          end
+        end
+
+        def test_body_escapes_a_quote_in_the_filename
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "notes.txt")
+            File.write(path, "x")
+
+            body = Http.new.send(:multipart_body, "BOUND", {}, "document", path, 'evil".txt')
+
+            refute_includes body, 'filename="evil".txt"'
+            assert_includes body, "filename=\"evil'.txt\""
+          end
+        end
       end
     end
   end
