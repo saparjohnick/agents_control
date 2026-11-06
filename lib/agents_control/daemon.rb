@@ -2,6 +2,7 @@
 
 require "net/http"
 require "json"
+require "rbconfig"
 
 module AgentsControl
   # Brings everything together: receiving hooks from agents and talking to Telegram.
@@ -15,11 +16,16 @@ module AgentsControl
     # daemon restart, or every restart would leave hooks firing into nothing.
     DEFAULT_PORT = 47_653
 
-    def initialize(config: nil, store: nil, secrets: nil, logger: $stdout)
+    # Overridden in tests: the real one replaces the running process outright.
+    REEXEC = ->(ruby, script, *args) { Kernel.exec(ruby, script, *args) }
+
+    def initialize(config: nil, store: nil, secrets: nil, logger: $stdout, reexec: REEXEC, executor: Executor.new)
       @config = config || Config.load
       @store = store || Store.new
       @secrets = secrets || Secrets.new
       @logger = logger
+      @reexec = reexec
+      @executor = executor
 
       # Without this, output buffers until the process exits. Under
       # launchd that means an empty log for a daemon that's actually
@@ -45,6 +51,7 @@ module AgentsControl
       start_anchors
       start_screen_watcher
       start_rate_limit_watcher
+      trap_reload
       install_agents
       verify_hooks
       publish_commands
@@ -165,6 +172,35 @@ module AgentsControl
         registry: Registry.new, config: @config, store: @store, api: api,
         interval: @config.get("terminal.rate_limit_poll_interval", 60), logger: @logger
       ).start
+    end
+
+    # `agents_control reload` and Router's /reload both send HUP here.
+    # The trap only spawns a thread — same reasoning as Bot#trap_signals'
+    # bare Queue#push: real work doesn't belong in signal-handler context.
+    def trap_reload
+      Signal.trap("HUP") { Thread.new { reload! } }
+    end
+
+    # exec, not fork, into the same entry point and arguments this
+    # process started with.
+    def reload!
+      script = $PROGRAM_NAME
+      return log("couldn't find #{script} to restart into — restart by hand") unless File.exist?(script)
+
+      failure = boot_failure(script)
+      return log("updated code doesn't start up — not restarting into it: #{failure}") if failure
+
+      log("restarting to pick up updated code")
+      stop
+      @reexec.call(RbConfig.ruby, script, *ARGV)
+    end
+
+    # stop tears down hooks and the bot before exec runs — no going back
+    # if the new code can't even boot, so `version` proves it first,
+    # side-effect-free and through the exact same require chain.
+    def boot_failure(script)
+      result = @executor.run(RbConfig.ruby, script, "version", timeout: 20)
+      result.success? ? nil : result.stderr.lines.last&.strip
     end
 
     def api = @api ||= Channels::Telegram::Api.new(@secrets.get(:telegram_token))

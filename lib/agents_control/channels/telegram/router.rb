@@ -46,14 +46,18 @@ module AgentsControl
           ["focus", "switch to a tab", "N"],
           ["run", "run a command in a tab", "N command"],
           ["new", "new tab", "[directory]"],
+          ["reload", "restart the daemon into updated code"],
           ["help", "this help text"]
         ].freeze
 
         HELP = (["Commands:", ""] +
                 COMMANDS.map { |name, text, hint| "/#{name}#{hint ? " #{hint}" : ''} — #{text}" }).join("\n")
 
+        # reload_trigger: Daemon#trap_reload is what actually acts on
+        # it; overridden in tests, since the real HUP's default action
+        # is to kill whatever process gets sent it.
         def initialize(api:, registry:, store:, config:, keyboards: nil, pending: nil, logger: nil,
-                       passphrase: nil, inbox: nil)
+                       passphrase: nil, inbox: nil, reload_trigger: -> { Process.kill("HUP", Process.pid) })
           @api = api
           @registry = registry
           @store = store
@@ -62,6 +66,7 @@ module AgentsControl
           @pending = pending
           @logger = logger
           @passphrase = passphrase || Passphrase.new
+          @reload_trigger = reload_trigger
           @inbox = inbox
         end
 
@@ -335,6 +340,7 @@ module AgentsControl
           when "/away" then toggle_away(chat_id, argument)
           when "/settings" then show_settings(chat_id)
           when "/context" then context(chat_id, argument)
+          when "/reload" then reload_daemon(chat_id)
           when "/status" then status(chat_id)
           else say(chat_id, "I don't know that command.\n\n#{HELP}")
           end
@@ -760,6 +766,11 @@ module AgentsControl
 
           id = backend.create_tab(cwd: directory.empty? ? nil : directory)
           say(chat_id, id ? "Created tab #{id}." : "Couldn't create a tab.")
+        end
+
+        def reload_daemon(chat_id)
+          say(chat_id, "🔄 Restarting…")
+          @reload_trigger.call
         end
 
         # Interception is turned on explicitly: while a human is at the

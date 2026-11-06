@@ -100,21 +100,16 @@ module AgentsControl
       Finds the process holding the hooks port and asks it to exit.
       Useful when an instance was left running somewhere and a new one won't start.
     TEXT
-    def stop
-      port = config.get("hooks.port", Daemon::DEFAULT_PORT).to_i
-      # argv array, not a shell string: no reason to trust a shell to
-      # parse a port number pulled from config.
-      out, = Open3.capture3("lsof", "-nP", "-iTCP:#{port}", "-sTCP:LISTEN", "-t")
-      pids = out.split
-      return say("Nothing is running.", :yellow) if pids.empty?
+    def stop = signal_daemon("TERM", "Stopped", "stop")
 
-      pids.each do |pid|
-        Process.kill("TERM", pid.to_i)
-        say("Stopped #{pid}", :green)
-      rescue Errno::ESRCH, Errno::EPERM => e
-        say("Couldn't stop #{pid}: #{e.message}", :red)
-      end
-    end
+    desc "reload", "Restart the running daemon into updated code"
+    long_desc <<~TEXT
+      Finds the process holding the hooks port and asks it to restart
+      itself in place — exec, not a fresh process, so it comes back up
+      in the same terminal tab if it was running in one. Run this after
+      a `git pull`, or after editing a file by hand.
+    TEXT
+    def reload = signal_daemon("HUP", "Asked to reload", "reload")
 
     desc "doctor", "Check that everything is in place"
     long_desc <<~TEXT
@@ -179,6 +174,22 @@ module AgentsControl
     def version = say(AgentsControl::VERSION)
 
     private
+
+    # argv array, not a shell string: no reason to trust a shell to
+    # parse a port number pulled from config.
+    def signal_daemon(signal, verb, action)
+      port = config.get("hooks.port", Daemon::DEFAULT_PORT).to_i
+      out, = Open3.capture3("lsof", "-nP", "-iTCP:#{port}", "-sTCP:LISTEN", "-t")
+      pids = out.split
+      return say("Nothing is running.", :yellow) if pids.empty?
+
+      pids.each do |pid|
+        Process.kill(signal, pid.to_i)
+        say("#{verb} #{pid}", :green)
+      rescue Errno::ESRCH, Errno::EPERM => e
+        say("Couldn't #{action} #{pid}: #{e.message}", :red)
+      end
+    end
 
     # Offered at the end of setup rather than left to be found later:
     # finishing setup is the moment the bot can start typing into this
