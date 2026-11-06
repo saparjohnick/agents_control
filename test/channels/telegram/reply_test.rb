@@ -23,7 +23,8 @@ module AgentsControl
           )
           @channel = Channel.new(api: @api, store: @store, config: @config)
           @router = Router.new(api: @api, registry: Registry.new(executor: @executor),
-                               store: @store, config: @config, pending: @pending)
+                               store: @store, config: @config, pending: @pending,
+                               attachment_queue: FakeAttachmentQueue.new)
         end
 
         def teardown = FileUtils.remove_entry(@dir)

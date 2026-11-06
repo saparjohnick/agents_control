@@ -138,20 +138,25 @@ module AgentsControl
   class FakeHttp
     Response = Struct.new(:code, :body)
 
-    attr_reader :calls
+    attr_reader :calls, :file_calls
 
     def initialize(*responses)
       @responses = responses.flatten
       @calls = []
+      @file_calls = []
     end
 
     def post(uri, params, read_timeout:)
       @calls << { uri: uri.to_s, params: params, read_timeout: read_timeout }
 
-      response = @responses.shift
-      raise response if response.is_a?(Exception)
+      respond
+    end
 
-      response || Response.new("200", JSON.generate({ ok: true, result: [] }))
+    def post_file(uri, fields, field:, path:, filename:, read_timeout:)
+      @file_calls << { uri: uri.to_s, fields: fields, field: field, path: path, filename: filename,
+                        read_timeout: read_timeout }
+
+      respond
     end
 
     def self.ok(result) = Response.new("200", JSON.generate({ ok: true, result: result }))
@@ -160,18 +165,29 @@ module AgentsControl
       Response.new("200", JSON.generate({ ok: false, error_code: code,
                                           description: description }.merge(extra)))
     end
+
+    private
+
+    def respond
+      response = @responses.shift
+      raise response if response.is_a?(Exception)
+
+      response || Response.new("200", JSON.generate({ ok: true, result: [] }))
+    end
   end
 
   # A Telegram client with no Telegram: remembers what was sent.
   class FakeApi
-    attr_reader :sent, :answered, :deleted
-    attr_accessor :fail_markdown_once
+    attr_reader :sent, :answered, :deleted, :documents
+    attr_accessor :fail_markdown_once, :fail_send_document_once
 
     def initialize
       @sent = []
       @answered = []
       @deleted = []
+      @documents = []
       @fail_markdown_once = false
+      @fail_send_document_once = false
     end
 
     def send_message(chat_id:, text:, reply_markup: nil, parse_mode: nil)
@@ -183,6 +199,16 @@ module AgentsControl
 
       @sent << { chat_id: chat_id, text: text, markup: reply_markup, parse_mode: parse_mode }
       { "message_id" => @sent.size }
+    end
+
+    def send_document(chat_id:, path:, caption: nil)
+      if @fail_send_document_once
+        @fail_send_document_once = false
+        raise Channels::Telegram::Api::Error, "sendDocument: Bad Request: simulated failure"
+      end
+
+      @documents << { chat_id: chat_id, path: path, caption: caption }
+      { "message_id" => @sent.size + @documents.size }
     end
 
     def delete_message(chat_id:, message_id:)
@@ -200,5 +226,15 @@ module AgentsControl
     def last_text = @sent.last&.fetch(:text)
 
     def texts = @sent.map { |message| message[:text] }
+  end
+
+  # Stands in for Router::AttachmentQueue: runs a job inline instead of
+  # on a real worker thread, so assertions right after handle() returns
+  # stay deterministic — and answers to #stop like the real queue does,
+  # since a Router with no agents_control business calling it (a bare
+  # `Router.new` in a test) still gets torn down the same way.
+  class FakeAttachmentQueue
+    def call(&job) = job.call
+    def stop; end
   end
 end

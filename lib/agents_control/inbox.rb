@@ -57,11 +57,14 @@ module AgentsControl
 
     class TooLarge < StandardError; end
 
-    # Seconds between attempts. A dropped connection on a phone's
-    # network or a reconnecting VPN is gone again within seconds, and
-    # the alternative is asking someone away from home to send the
-    # file again.
-    RETRY_AFTER = [1, 3, 5].freeze
+    # Doubling backoff: fast while a drop is likely to clear itself
+    # (a train going through a tunnel), spaced out once it looks like
+    # a real outage. Bounded by MAX_RETRY_ATTEMPTS, not left to grow
+    # forever, even though Router now runs this off its own queue and
+    # a slow retry no longer holds up anything else in the chat.
+    INITIAL_RETRY_DELAY = 2
+    MAX_RETRY_ATTEMPTS = 4
+    RETRY_AFTER = Array.new(MAX_RETRY_ATTEMPTS) { |attempt| INITIAL_RETRY_DELAY * (2**attempt) }.freeze
 
     def initialize(api:, dir: self.class.path, keep_days: 14, sleeper: ->(seconds) { sleep(seconds) })
       @api = api

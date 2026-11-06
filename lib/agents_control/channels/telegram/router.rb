@@ -54,13 +54,59 @@ module AgentsControl
         HELP = (["Commands:", ""] +
                 COMMANDS.map { |name, text, hint| "/#{name}#{hint ? " #{hint}" : ''} — #{text}" }).join("\n")
 
+        # A single worker, not a thread per job: an album's later parts
+        # depend on a Store write its first part makes (see
+        # deliver_file's album_session), so jobs stay FIFO instead of
+        # racing each other the way Channel's resend_later would.
+        class AttachmentQueue
+          STOP = :stop
+
+          # setup runs once, on the worker thread itself, before its
+          # first job — Router uses it to tag the thread with its own
+          # Registry (see Router#registry), without this generic queue
+          # needing to know what a Registry is.
+          def initialize(&setup)
+            @jobs = Thread::Queue.new
+            @worker = Thread.new do
+              setup&.call
+              run
+            end
+          end
+
+          def call(&job) = @jobs << job
+
+          # Lets a queue's owner shut its worker down cleanly — tests
+          # build a real queue to prove ordering and must not leak the
+          # thread once they're done with it.
+          def stop
+            @jobs << STOP
+            @worker.join
+          end
+
+          private
+
+          def run
+            while (job = @jobs.pop) != STOP
+              job.call
+            end
+          end
+        end
+
         # reload_trigger: Daemon#trap_reload is what actually acts on
         # it; overridden in tests, since the real HUP's default action
         # is to kill whatever process gets sent it.
+        #
+        # attachment_registry defaults to the same Registry as the rest
+        # of Router: a caller that wants the two threads (poll loop,
+        # attachment queue worker) to stop sharing a cache — which is
+        # the whole point in production — passes a second, independent
+        # one. See Daemon#start_bot and Router#registry.
         def initialize(api:, registry:, store:, config:, keyboards: nil, pending: nil, logger: nil,
-                       passphrase: nil, inbox: nil, reload_trigger: -> { Process.kill("HUP", Process.pid) })
+                       passphrase: nil, inbox: nil, reload_trigger: -> { Process.kill("HUP", Process.pid) },
+                       attachment_registry: registry, attachment_queue: nil)
           @api = api
           @registry = registry
+          @attachment_registry = attachment_registry
           @store = store
           @config = config
           @keyboards = keyboards || Keyboards.new(store: store)
@@ -69,7 +115,15 @@ module AgentsControl
           @passphrase = passphrase || Passphrase.new
           @reload_trigger = reload_trigger
           @inbox = inbox
+          @attachment_queue = attachment_queue || AttachmentQueue.new { Thread.current[:registry] = @attachment_registry }
         end
+
+        # Not called by the daemon today — process exit takes the
+        # worker thread with it either way — but a Router built
+        # directly (every test that doesn't go through build_router's
+        # synchronous stub) owns a real thread and needs a way to let
+        # go of it.
+        def stop = @attachment_queue.stop
 
         # Called once by the daemon on start; everything else here is
         # driven by an incoming update.
@@ -95,6 +149,13 @@ module AgentsControl
         end
 
         private
+
+        # Thread-tagged, not a plain @registry read: AttachmentQueue's
+        # worker tags itself with @attachment_registry once at startup
+        # (see its setup block in #initialize), so its scans use that
+        # instead — independently of, and never racing, the poll
+        # thread's own cache.
+        def registry = Thread.current[:registry] || @registry
 
         def allowed?(chat_id)
           allowed = @config.get("telegram.allowed_chat_ids", [])
@@ -176,7 +237,7 @@ module AgentsControl
         # if it was learned after this target was stored), then cwd as a
         # fallback for a closed tab, preferring an agent match if one exists.
         def resolve_session(chat_id, target)
-          exact = @registry.refresh.find(learned_session_id(target))
+          exact = registry.refresh.find(learned_session_id(target))
           return exact if exact && !exact.terminalless?
 
           matching = tabs_for(target["cwd"], agents_only: target["from_agent"])
@@ -223,7 +284,7 @@ module AgentsControl
         end
 
         def resolve_disambiguation(chat_id, payload)
-          session = @registry.refresh.find(payload["session_id"])
+          session = registry.refresh.find(payload["session_id"])
           return say(chat_id, "That tab closed before you picked.") unless session
 
           @store.put(session.id, ttl: REPLY_TARGET_TTL, key: agent_session_key(payload["hook_session_id"]))
@@ -241,7 +302,7 @@ module AgentsControl
         # once that agent is gone, a shell left in the same folder is not
         # its successor, and the reply would be run there as a command.
         def tabs_for(cwd, agents_only: false)
-          tabs = @registry.sessions.reject(&:terminalless?)
+          tabs = registry.sessions.reject(&:terminalless?)
 
           same = tabs.select { |s| s.cwd == cwd }
           unless same.empty?
@@ -255,7 +316,7 @@ module AgentsControl
         end
 
         # A file from the phone becomes a file on disk, and the agent is
-        # handed its path.
+        # handed its path — fetched via AttachmentQueue, not here directly.
         #
         # A path and not a link: Telegram serves file bytes from a URL
         # with the bot token in it, so pasting that into a pane would
@@ -263,14 +324,49 @@ module AgentsControl
         # the shell history — and a leaked token is remote code
         # execution on this machine.
         def receive(chat_id, message, attachment)
+          @attachment_queue.call { deliver_attachment(chat_id, message, attachment) }
+        end
+
+        def deliver_attachment(chat_id, message, attachment)
           path = inbox.fetch(attachment)
           log("received #{attachment.kind}: #{File.basename(path)}")
 
           deliver_file(chat_id, message, path)
         rescue Inbox::TooLarge => e
           say(chat_id, "That file is #{e.message}.")
-        rescue Api::Error, SystemCallError => e
+        rescue Api::Unavailable, Api::TooManyRequests, SystemCallError => e
+          # All three are transient — outlasted Inbox's own retries,
+          # or Telegram rate-limiting for a moment — so the file_id is
+          # still good and a second try is worth offering. A non-network
+          # Api::Error below is not: whatever Telegram objected to will
+          # still be true next time.
+          offer_retry(chat_id, message, "Couldn't save that file: #{@api.redact(e.message)}")
+        rescue Api::Error => e
           say(chat_id, "Couldn't save that file: #{@api.redact(e.message)}")
+        rescue StandardError => e
+          # Runs on the queue's worker thread, away from Bot#handle's
+          # own backstop — without this, an escaped exception here
+          # would vanish silently instead of getting logged.
+          log("failed to handle #{attachment.kind}: #{e.class}: #{@api.redact(e.message)}")
+        end
+
+        RETRY_BUTTON_TTL = 1800
+
+        def offer_retry(chat_id, message, text)
+          payload = { "action" => "retry_attachment", "message" => message }
+          markup = { inline_keyboard: [[{ text: "🔄 Try again",
+                                          callback_data: @store.put(payload, ttl: RETRY_BUTTON_TTL) }]] }
+          say(chat_id, text, markup: markup)
+        end
+
+        # Stores the whole message, not just the file_id: deliver_file
+        # also reads its caption, reply, and album id.
+        def retry_attachment(chat_id, payload)
+          message = payload["message"]
+          attachment = Inbox.attachment(message)
+          return say(chat_id, "That file's gone now — send it again.") unless attachment
+
+          receive(chat_id, message, attachment)
         end
 
         # Ways to say where it goes, in order of how explicit they are: a
@@ -332,7 +428,7 @@ module AgentsControl
 
         def album_session(key)
           id = key && @store.get(key)
-          session = id && @registry.refresh.find(id)
+          session = id && registry.refresh.find(id)
           session if session&.agent? && !session.terminalless?
         end
 
@@ -391,12 +487,12 @@ module AgentsControl
         # A shared refresh for both lists — otherwise the same session's
         # number could differ between "All tabs" and "Agents".
         def agents_list(chat_id)
-          universe = @registry.refresh.sessions
+          universe = registry.refresh.sessions
           list(chat_id, universe.select(&:agent?), "🤖 Agent sessions", universe: universe)
         end
 
         def tabs_list(chat_id)
-          universe = @registry.refresh.sessions
+          universe = registry.refresh.sessions
           list(chat_id, universe, "🖥 All tabs", universe: universe, with_focus_buttons: true)
         end
 
@@ -416,7 +512,7 @@ module AgentsControl
 
         def focus(chat_id, argument)
           with_session(chat_id, argument) do |session|
-            ok = @registry.backend_for(session).focus(session.id)
+            ok = registry.backend_for(session).focus(session.id)
             sent = say(chat_id, ok ? "Switched to #{session.label}." : "Couldn't switch.")
             remember_reply(chat_id, sent, session) if ok
           end
@@ -634,7 +730,7 @@ module AgentsControl
                                 "machine if it's lost.")
           end
 
-          session = @registry.refresh.find(challenge["session_id"])
+          session = registry.refresh.find(challenge["session_id"])
           return say(chat_id, "That session is already closed.") unless session
 
           execute(chat_id, session, challenge["text"], show_result: !session.agent?, vetted: true)
@@ -696,7 +792,7 @@ module AgentsControl
             return confirm_policy(chat_id, session, command, verdict.reason) if verdict.confirm?
           end
 
-          backend = @registry.backend_for(session)
+          backend = registry.backend_for(session)
           before ||= capture_screen(session, lines: run_result_lines) if show_result
 
           ok = backend.send_text(session.id, command, newline: false) &&
@@ -805,7 +901,7 @@ module AgentsControl
         end
 
         def create_tab(chat_id, directory)
-          backend = @registry.available_backends.first
+          backend = registry.available_backends.first
           return say(chat_id, "No terminal available.") unless backend
 
           id = backend.create_tab(cwd: directory.empty? ? nil : directory)
@@ -815,47 +911,6 @@ module AgentsControl
         def reload_daemon(chat_id)
           say(chat_id, "🔄 Restarting…")
           @reload_trigger.call
-        end
-
-        RECENT_FILES_OFFERED = 2
-        TAB_NUMBER = /\A\d+\z/
-
-        def getfile(chat_id, argument)
-          argument = argument.to_s.strip
-          return send_file(chat_id, argument) unless argument.empty? || argument.match?(TAB_NUMBER)
-          return with_session(chat_id, argument) { |session| offer_recent_files(chat_id, session) } unless argument.empty?
-
-          target = @store.get(last_target_key(chat_id))
-          return say(chat_id, "No active conversation yet — try /getfile NUMBER or /getfile PATH.") unless target
-
-          session = session_for(chat_id, target)
-          offer_recent_files(chat_id, session) if session
-        end
-
-        def offer_recent_files(chat_id, session)
-          transcript = Transcript.for_cwd(session.cwd, root: transcript_root)
-          paths = transcript.recent_files(RECENT_FILES_OFFERED)
-
-          return say(chat_id, "No recently touched files found for #{session.label}.") if paths.empty?
-
-          markup = { inline_keyboard: paths.map { |path| [file_button(path)] } }
-          say(chat_id, "📄 Recent files in #{session.label}:", markup: markup)
-        end
-
-        def file_button(path)
-          { text: File.basename(path)[0, 60],
-            callback_data: @store.put({ "action" => "getfile", "path" => path }, ttl: 600) }
-        end
-
-        # No path restricted here, same as /run: anyone who can reach
-        # this chat can already `cat` anything via a shell.
-        def send_file(chat_id, path)
-          expanded = File.expand_path(path)
-          return say(chat_id, "No such file:\n\n`#{path}`") unless File.file?(expanded)
-
-          @api.send_document(chat_id: chat_id, path: expanded)
-        rescue Api::Error, SystemCallError, ArgumentError => e
-          say(chat_id, "Couldn't send that file: #{@api.redact(e.message)}")
         end
 
         # Interception is turned on explicitly: while a human is at the
@@ -899,6 +954,47 @@ module AgentsControl
           end
         end
 
+        RECENT_FILES_OFFERED = 2
+        TAB_NUMBER = /\A\d+\z/
+
+        def getfile(chat_id, argument)
+          argument = argument.to_s.strip
+          return send_file(chat_id, argument) unless argument.empty? || argument.match?(TAB_NUMBER)
+          return with_session(chat_id, argument) { |session| offer_recent_files(chat_id, session) } unless argument.empty?
+
+          target = @store.get(last_target_key(chat_id))
+          return say(chat_id, "No active conversation yet — try /getfile NUMBER or /getfile PATH.") unless target
+
+          session = session_for(chat_id, target)
+          offer_recent_files(chat_id, session) if session
+        end
+
+        def offer_recent_files(chat_id, session)
+          transcript = Transcript.for_cwd(session.cwd, root: transcript_root)
+          paths = transcript.recent_files(RECENT_FILES_OFFERED)
+
+          return say(chat_id, "No recently touched files found for #{session.label}.") if paths.empty?
+
+          markup = { inline_keyboard: paths.map { |path| [file_button(path)] } }
+          say(chat_id, "📄 Recent files in #{session.label}:", markup: markup)
+        end
+
+        def file_button(path)
+          { text: File.basename(path)[0, 60],
+            callback_data: @store.put({ "action" => "getfile", "path" => path }, ttl: 600) }
+        end
+
+        # No path restricted here, same as /run: anyone who can reach
+        # this chat can already `cat` anything via a shell.
+        def send_file(chat_id, path)
+          expanded = File.expand_path(path)
+          return say(chat_id, "No such file:\n\n`#{path}`") unless File.file?(expanded)
+
+          @api.send_document(chat_id: chat_id, path: expanded)
+        rescue Api::Error, SystemCallError, ArgumentError => e
+          say(chat_id, "Couldn't send that file: #{@api.redact(e.message)}")
+        end
+
         # Not necessarily an immediate reply, but whenever convenient — TTL 30 days, not a day.
         REPLY_TARGET_TTL = 30 * 86_400
 
@@ -916,8 +1012,8 @@ module AgentsControl
         def last_target_key(chat_id) = "last:#{chat_id}"
 
         def status(chat_id)
-          sessions = @registry.refresh.sessions
-          backends = @registry.available_backends.map(&:name).join(", ")
+          sessions = registry.refresh.sessions
+          backends = registry.available_backends.map(&:name).join(", ")
 
           say(chat_id, "Tabs: #{sessions.size}\nAgents: #{sessions.count(&:agent?)}\n" \
                        "Backends: #{backends.empty? ? 'none' : backends}\n" \
@@ -981,6 +1077,7 @@ module AgentsControl
           when "passphrase_never" then stop_offering(chat_id)
           when "ask_question_choice" then answer_ask_user_question(chat_id, payload)
           when "disambiguate" then resolve_disambiguation(chat_id, payload)
+          when "retry_attachment" then retry_attachment(chat_id, payload)
           else act_on_session(chat_id, payload)
           end
         end
@@ -1019,10 +1116,10 @@ module AgentsControl
         # way a human would from the keyboard. There's no structured
         # reply here, unlike with hooks.
         def choose_menu_option(chat_id, payload)
-          session = @registry.refresh.find(payload["session_id"])
+          session = registry.refresh.find(payload["session_id"])
           return say(chat_id, "That session is already closed.") unless session
 
-          ok = @registry.backend_for(session).send_text(session.id, payload["choice"].to_s)
+          ok = registry.backend_for(session).send_text(session.id, payload["choice"].to_s)
           say(chat_id, ok ? "Chose \"#{payload['choice']}\" in #{session.label}." : "Couldn't send the choice.")
         end
 
@@ -1031,10 +1128,10 @@ module AgentsControl
         # through the hook — it's always been resolved by hand at the
         # terminal, and this just sends the same keystroke a human would.
         def answer_ask_user_question(chat_id, payload)
-          session = @registry.refresh.find(payload["session_id"])
+          session = registry.refresh.find(payload["session_id"])
           return say(chat_id, "That session is already closed.") unless session
 
-          ok = @registry.backend_for(session).send_text(session.id, payload["choice"].to_s)
+          ok = registry.backend_for(session).send_text(session.id, payload["choice"].to_s)
           say(chat_id, ok ? "Sent to #{session.label}." : "Couldn't send the choice.")
         end
 
@@ -1046,7 +1143,7 @@ module AgentsControl
         end
 
         def act_on_session(chat_id, payload)
-          session = @registry.refresh.find(payload["session_id"])
+          session = registry.refresh.find(payload["session_id"])
           return say(chat_id, "That session is already closed.") unless session
 
           case payload["action"]
@@ -1061,7 +1158,7 @@ module AgentsControl
         end
 
         def focus_session(chat_id, session)
-          @registry.backend_for(session).focus(session.id)
+          registry.backend_for(session).focus(session.id)
           sent = say(chat_id, "Switched to #{session.label}.")
           remember_reply(chat_id, sent, session)
         end
@@ -1084,7 +1181,7 @@ module AgentsControl
         end
 
         def capture_screen(session, lines: @config.get("terminal.context_lines", 80))
-          @registry.backend_for(session).capture(session.id, lines: lines)
+          registry.backend_for(session).capture(session.id, lines: lines)
         rescue Terminals::Unsupported
           nil
         end
@@ -1110,7 +1207,7 @@ module AgentsControl
         end
 
         def close_session(chat_id, session)
-          ok = @registry.backend_for(session).close(session.id)
+          ok = registry.backend_for(session).close(session.id)
           say(chat_id, ok ? "Closed #{session.label}." : "Couldn't close it.")
         end
 
@@ -1118,7 +1215,7 @@ module AgentsControl
           id = @keyboards.session_for(chat_id, number.to_s.strip)
           return say(chat_id, "No such number — pull up the list again.") unless id
 
-          session = @registry.refresh.find(id)
+          session = registry.refresh.find(id)
           return say(chat_id, "That session is already closed.") unless session
 
           yield(session)

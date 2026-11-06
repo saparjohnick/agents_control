@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "tmpdir"
+require "timeout"
 
 module AgentsControl
   module Channels
@@ -1021,7 +1022,7 @@ module AgentsControl
           tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
                               cwd: "/tmp/other", agent: :claude_code)
           backend = RecordingBackend.new
-          router = Router.new(api: @api, store: @store, config: @config,
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
                               registry: FakeMultiRegistry.new([tab_a, tab_b], backend))
           @store.put({ "session_id" => "TAB-A", "cwd" => "/tmp/flightlog", "label" => "flightlog" }, key: "last:#{OWNER}")
 
@@ -1036,12 +1037,50 @@ module AgentsControl
           tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
                               cwd: "/tmp/other", agent: :claude_code)
           backend = RecordingBackend.new
-          router = Router.new(api: @api, store: @store, config: @config,
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
                               registry: FakeMultiRegistry.new([tab_a, tab_b], backend))
           @store.put({ "session_id" => "TAB-A", "cwd" => "/tmp/flightlog", "label" => "flightlog" }, key: "last:#{OWNER}")
           @store.put({ "session_id" => "TAB-B", "cwd" => "/tmp/other", "label" => "other" }, key: "reply:#{OWNER}:555")
 
           router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          assert_equal [["TAB-B", "continue"], ["TAB-B", ""]], backend.calls
+        end
+
+        # Reproduces a real report: tapping a tab's focus button switched
+        # the terminal, but a plain follow-up message kept going to
+        # whichever session had spoken last over the hook — focusing a
+        # tab didn't make it the target for the next message.
+        def test_tapping_a_focus_button_redirects_the_next_plain_message
+          tab_a = Session.new(id: "TAB-A", backend: :iterm2, tty: "/dev/ttys030",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/other", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
+                              registry: FakeMultiRegistry.new([tab_a, tab_b], backend))
+          @store.put({ "session_id" => "TAB-A", "cwd" => "/tmp/flightlog", "label" => "flightlog" }, key: "last:#{OWNER}")
+
+          key = @store.put({ "action" => "focus", "session_id" => "TAB-B" })
+          router.handle(pressed(key, chat_id: OWNER))
+          router.handle(incoming("continue", chat_id: OWNER))
+
+          assert_equal [["TAB-B", "continue"], ["TAB-B", ""]], backend.calls
+        end
+
+        def test_the_focus_command_also_redirects_the_next_plain_message
+          tab_a = Session.new(id: "TAB-A", backend: :iterm2, tty: "/dev/ttys030",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/other", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
+                              registry: FakeMultiRegistry.new([tab_a, tab_b], backend))
+          @store.put({ "session_id" => "TAB-A", "cwd" => "/tmp/flightlog", "label" => "flightlog" }, key: "last:#{OWNER}")
+
+          router.handle(incoming("/tabs", chat_id: OWNER))
+          router.handle(incoming("/focus 2", chat_id: OWNER))
+          router.handle(incoming("continue", chat_id: OWNER))
 
           assert_equal [["TAB-B", "continue"], ["TAB-B", ""]], backend.calls
         end
@@ -1106,7 +1145,7 @@ module AgentsControl
           tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
                               cwd: "/tmp/flightlog", agent: :claude_code)
           backend = RecordingBackend.new
-          router = Router.new(api: @api, store: @store, config: @config,
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
                               registry: FakeMultiRegistry.new([tab_a, tab_b], backend))
           @store.put({ "session_id" => "TAB-B", "cwd" => "/tmp/flightlog", "label" => "flightlog" },
                      key: "reply:#{OWNER}:555")
@@ -1123,7 +1162,7 @@ module AgentsControl
           tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
                               cwd: "/tmp/flightlog", agent: :claude_code)
           backend = RecordingBackend.new
-          router = Router.new(api: @api, store: @store, config: @config,
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
                               registry: FakeMultiRegistry.new([tab_b], backend))
           @store.put({ "session_id" => "TAB-GONE", "cwd" => "/tmp/flightlog", "label" => "flightlog" },
                      key: "reply:#{OWNER}:555")
@@ -1140,7 +1179,7 @@ module AgentsControl
                               cwd: "/tmp/flightlog", agent: :claude_code)
           tab_c = Session.new(id: "TAB-C", backend: :iterm2, tty: "/dev/ttys032",
                               cwd: "/tmp/flightlog", agent: :claude_code)
-          router = Router.new(api: @api, store: @store, config: @config,
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
                               registry: FakeMultiRegistry.new([tab_b, tab_c], RecordingBackend.new))
           @store.put({ "session_id" => "TAB-GONE", "cwd" => "/tmp/flightlog", "label" => "flightlog" },
                      key: "reply:#{OWNER}:555")
@@ -1148,6 +1187,109 @@ module AgentsControl
           router.handle(reply_to("continue", 555, chat_id: OWNER))
 
           assert_includes @api.last_text, "several tabs"
+        end
+
+        # Reproduces a real report: two real claude_code tabs genuinely
+        # share one cwd, and the hook payload has nothing finer than
+        # that to go on. The chat's own "last" target is the signal
+        # that's actually available — whichever of the two the
+        # conversation was already with wins, instead of asking the
+        # human to pick with /run NUMBER every single time.
+        def test_reply_resolves_ambiguity_via_the_chats_last_interacted_tab
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_c = Session.new(id: "TAB-C", backend: :iterm2, tty: "/dev/ttys032",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
+                              registry: FakeMultiRegistry.new([tab_b, tab_c], backend))
+          @store.put({ "session_id" => "TAB-GONE", "cwd" => "/tmp/flightlog", "label" => "flightlog" },
+                     key: "reply:#{OWNER}:555")
+          @store.put({ "session_id" => "TAB-C", "cwd" => "/tmp/flightlog", "label" => "flightlog" },
+                     key: "last:#{OWNER}")
+
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          assert_equal [["TAB-C", "continue"], ["TAB-C", ""]], backend.calls
+        end
+
+        # The "last" target exists but belongs to an unrelated project —
+        # it must not be forced onto this reply just because it's there.
+        def test_reply_still_disambiguates_when_the_last_tab_is_unrelated
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_c = Session.new(id: "TAB-C", backend: :iterm2, tty: "/dev/ttys032",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
+                              registry: FakeMultiRegistry.new([tab_b, tab_c], RecordingBackend.new))
+          @store.put({ "session_id" => "TAB-GONE", "cwd" => "/tmp/flightlog", "label" => "flightlog" },
+                     key: "reply:#{OWNER}:555")
+          @store.put({ "session_id" => "TAB-OTHER", "cwd" => "/tmp/other-project", "label" => "other" },
+                     key: "last:#{OWNER}")
+
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          assert_includes @api.last_text, "several tabs"
+        end
+
+        # ── disambiguation buttons ──────────────────────────────────────
+        #
+        # A reply that needs a human to pick holds onto the text rather
+        # than asking for it again, and a tap teaches the mapping for
+        # that agent's hook session — see Router#resolve_session.
+
+        def test_an_ambiguous_reply_offers_a_button_per_candidate_tab
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_c = Session.new(id: "TAB-C", backend: :iterm2, tty: "/dev/ttys032",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
+                              registry: FakeMultiRegistry.new([tab_b, tab_c], RecordingBackend.new))
+          @store.put({ "session_id" => "HOOK-UUID-1", "cwd" => "/tmp/flightlog", "label" => "flightlog",
+                       "from_agent" => true }, key: "reply:#{OWNER}:555")
+
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          buttons = @api.sent.last[:markup][:inline_keyboard].flatten
+          assert_equal %w[ttys031 ttys032], buttons.map { |b| b[:text] }
+        end
+
+        def test_tapping_a_disambiguation_button_delivers_the_held_text
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_c = Session.new(id: "TAB-C", backend: :iterm2, tty: "/dev/ttys032",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
+                              registry: FakeMultiRegistry.new([tab_b, tab_c], backend))
+          @store.put({ "session_id" => "HOOK-UUID-1", "cwd" => "/tmp/flightlog", "label" => "flightlog",
+                       "from_agent" => true }, key: "reply:#{OWNER}:555")
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+
+          router.handle(pressed(button_key(@api.sent.last, "ttys032"), chat_id: OWNER))
+
+          assert_equal [["TAB-C", "continue"], ["TAB-C", ""]], backend.calls
+        end
+
+        def test_disambiguation_is_remembered_for_the_next_message_from_the_same_agent
+          tab_b = Session.new(id: "TAB-B", backend: :iterm2, tty: "/dev/ttys031",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          tab_c = Session.new(id: "TAB-C", backend: :iterm2, tty: "/dev/ttys032",
+                              cwd: "/tmp/flightlog", agent: :claude_code)
+          backend = RecordingBackend.new
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
+                              registry: FakeMultiRegistry.new([tab_b, tab_c], backend))
+          @store.put({ "session_id" => "HOOK-UUID-1", "cwd" => "/tmp/flightlog", "label" => "flightlog",
+                       "from_agent" => true }, key: "reply:#{OWNER}:555")
+          router.handle(reply_to("continue", 555, chat_id: OWNER))
+          router.handle(pressed(button_key(@api.sent.last, "ttys032"), chat_id: OWNER))
+
+          @store.put({ "session_id" => "HOOK-UUID-1", "cwd" => "/tmp/flightlog", "label" => "flightlog",
+                       "from_agent" => true }, key: "reply:#{OWNER}:777")
+          router.handle(reply_to("one more thing", 777, chat_id: OWNER))
+
+          assert_equal [["TAB-C", "continue"], ["TAB-C", ""], ["TAB-C", "one more thing"], ["TAB-C", ""]],
+                       backend.calls
         end
 
         # The hook's cwd is wherever the agent has cd'd to since; the
@@ -1160,7 +1302,7 @@ module AgentsControl
           sibling = Session.new(id: "TAB-S", backend: :iterm2, tty: "/dev/ttys032",
                                 cwd: "/tmp/videodryer/ios-old", agent: :claude_code)
           backend = RecordingBackend.new
-          router = Router.new(api: @api, store: @store, config: @config,
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
                               registry: FakeMultiRegistry.new([parent, project, sibling], backend))
           @store.put({ "session_id" => "f4a51c9f", "cwd" => "/tmp/videodryer/ios", "label" => "ios" },
                      key: "reply:#{OWNER}:555")
@@ -1173,7 +1315,7 @@ module AgentsControl
         def test_reply_to_an_agents_message_never_lands_in_a_shell_left_in_its_folder
           shell = Session.new(id: "TAB-SH", backend: :iterm2, tty: "/dev/ttys030", cwd: "/tmp/flightlog")
           backend = RecordingBackend.new
-          router = Router.new(api: @api, store: @store, config: @config,
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
                               registry: FakeMultiRegistry.new([shell], backend))
           @store.put({ "session_id" => "TAB-GONE", "cwd" => "/tmp/flightlog", "label" => "flightlog",
                        "from_agent" => true }, key: "reply:#{OWNER}:555")
@@ -1186,7 +1328,7 @@ module AgentsControl
 
         def test_reply_never_lands_in_a_plain_shell_above_the_agents_folder
           shell = Session.new(id: "TAB-SH", backend: :iterm2, tty: "/dev/ttys030", cwd: "/tmp/videodryer")
-          router = Router.new(api: @api, store: @store, config: @config,
+          router = Router.new(api: @api, store: @store, config: @config, attachment_queue: FakeAttachmentQueue.new,
                               registry: FakeMultiRegistry.new([shell], RecordingBackend.new))
           @store.put({ "session_id" => "f4a51c9f", "cwd" => "/tmp/videodryer/ios", "label" => "ios" },
                      key: "reply:#{OWNER}:555")
@@ -1256,7 +1398,8 @@ module AgentsControl
           backend = RecordingBackend.new
           router = Router.new(api: @api, store: @store, config: @config,
                               registry: FakeMultiRegistry.new([agent], backend),
-                              inbox: Sequence.new("/tmp/inbox/a.mov", "/tmp/inbox/b.mov"))
+                              inbox: Sequence.new("/tmp/inbox/a.mov", "/tmp/inbox/b.mov"),
+                              attachment_queue: FakeAttachmentQueue.new)
           @store.put({ "session_id" => "TAB-V", "cwd" => "/tmp/videodryer", "label" => "videodryer" },
                      key: "reply:#{OWNER}:555")
 
@@ -1284,7 +1427,8 @@ module AgentsControl
           backend = RecordingBackend.new
           router = Router.new(api: @api, store: @store, config: @config,
                               registry: FakeMultiRegistry.new([agent], backend),
-                              inbox: Sequence.new("/tmp/inbox/a.png", "/tmp/inbox/b.png"))
+                              inbox: Sequence.new("/tmp/inbox/a.png", "/tmp/inbox/b.png"),
+                              attachment_queue: FakeAttachmentQueue.new)
           @store.put({ "session_id" => "TAB-V", "cwd" => "/tmp/videodryer", "label" => "videodryer" },
                      key: "last:#{OWNER}")
 
@@ -1304,7 +1448,8 @@ module AgentsControl
             backend = RecordingBackend.new
             router = Router.new(api: @api, store: @store, config: @config,
                                 registry: FakeMultiRegistry.new([agent], backend),
-                                inbox: FakeInbox.new("/tmp/inbox/#{kind}.bin"))
+                                inbox: FakeInbox.new("/tmp/inbox/#{kind}.bin"),
+                                attachment_queue: FakeAttachmentQueue.new)
             @store.put({ "session_id" => "TAB-V", "cwd" => "/tmp/videodryer", "label" => "videodryer" },
                        key: "last:#{OWNER}")
             descriptor = { "file_id" => "abc", "file_size" => 2048 }
@@ -1314,6 +1459,95 @@ module AgentsControl
 
             assert_includes backend.calls, ["TAB-V", "/tmp/inbox/#{kind}.bin"], kind
           end
+        end
+
+        # ── attachments don't block the chat ──────────────────────────────
+
+        # handle() for the document must return before BlockingInbox
+        # unblocks, or this hangs instead of failing.
+        def test_a_slow_download_does_not_hold_up_the_next_message
+          inbox = BlockingInbox.new
+          queue = Router::AttachmentQueue.new
+          router = build_router(inbox: inbox, attachment_queue: queue)
+
+          router.handle(with_document("x.png", chat_id: OWNER))
+          router.handle(incoming("/status", chat_id: OWNER))
+
+          assert_includes @api.last_text, "Tabs:"
+        ensure
+          inbox.release!
+          queue.stop
+        end
+
+        # Album delivery depends on this ordering — see deliver_file's album_session.
+        def test_attachment_queue_runs_jobs_one_at_a_time_in_order
+          queue = Router::AttachmentQueue.new
+          done = Thread::Queue.new
+          order = []
+
+          queue.call do
+            sleep 0.05
+            order << :first
+          end
+          queue.call do
+            order << :second
+            done << true
+          end
+
+          done.pop
+          assert_equal %i[first second], order
+        ensure
+          queue.stop
+        end
+
+        def test_attachment_queue_runs_its_setup_block_once_on_the_worker_thread
+          done = Thread::Queue.new
+          setup_thread = nil
+          queue = Router::AttachmentQueue.new { setup_thread = Thread.current }
+
+          queue.call { done << Thread.current }
+
+          worker_thread = done.pop
+          assert_same setup_thread, worker_thread
+          refute_same Thread.current, worker_thread
+        ensure
+          queue.stop
+        end
+
+        # Router's default AttachmentQueue tags its worker thread with
+        # attachment_registry (see #initialize) — this is what actually
+        # keeps the poll thread's Registry and the attachment worker's
+        # from ever being the same shared, racing cache.
+        def test_attachment_delivery_resolves_against_its_own_registry
+          done = Thread::Queue.new
+          main_session = Session.new(id: "MAIN", backend: :iterm2, tty: "/dev/ttys01",
+                                     cwd: "/tmp/proj", agent: :claude_code)
+          main_backend = RecordingBackend.new
+          attachment_session = Session.new(id: "ATTACH", backend: :iterm2, tty: "/dev/ttys02",
+                                           cwd: "/tmp/proj", agent: :claude_code)
+          attachment_backend = Class.new(RecordingBackend) do
+            define_method(:send_text) do |id, text, newline: true|
+              result = super(id, text, newline: newline)
+              done << true
+              result
+            end
+          end.new
+
+          router = Router.new(
+            api: @api, store: @store, config: @config,
+            registry: FakeMultiRegistry.new([main_session], main_backend),
+            attachment_registry: FakeMultiRegistry.new([attachment_session], attachment_backend),
+            inbox: FakeInbox.new("/tmp/inbox/notes.txt")
+          )
+          @store.put({ "session_id" => "none", "cwd" => "/tmp/proj", "label" => "proj" }, key: "last:#{OWNER}")
+
+          router.handle(with_document("notes.txt", chat_id: OWNER))
+          Timeout.timeout(2) { done.pop }
+
+          assert_empty main_backend.calls
+          refute_empty attachment_backend.calls
+        ensure
+          router&.stop
         end
 
         def test_a_file_without_a_reply_is_not_typed_into_a_shell_that_spoke_last
@@ -1354,6 +1588,56 @@ module AgentsControl
           router.handle(with_document("huge.bin", chat_id: OWNER))
 
           assert_includes @api.last_text, "20"
+        end
+
+        # Unlike TooLarge, a network failure deserves a button: retrying
+        # it can succeed.
+        def test_a_download_failure_offers_a_retry_button
+          _executor, router = shell_tab(inbox: FailingInbox.new(Api::Unavailable.new("SSL EOF")))
+
+          router.handle(with_document("notes.txt", chat_id: OWNER))
+
+          assert_includes @api.last_text, "Couldn't save"
+          assert_includes @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] }, "🔄 Try again"
+        end
+
+        # Rate limiting is as transient as a dropped connection — the
+        # file_id is fine, Telegram just wants a moment.
+        def test_rate_limiting_also_offers_a_retry_button
+          _executor, router = shell_tab(inbox: FailingInbox.new(Api::TooManyRequests.new("slow down", 3)))
+
+          router.handle(with_document("notes.txt", chat_id: OWNER))
+
+          assert_includes @api.sent.last[:markup][:inline_keyboard].flatten.map { |b| b[:text] }, "🔄 Try again"
+        end
+
+        # A non-network Api::Error means Telegram rejected the attempt
+        # outright — retrying would just repeat it, so no button.
+        def test_a_non_network_api_error_offers_no_retry_button
+          _executor, router = shell_tab(inbox: FailingInbox.new(Api::Error.new("chat not found")))
+
+          router.handle(with_document("notes.txt", chat_id: OWNER))
+
+          assert_nil @api.sent.last[:markup]
+        end
+
+        def test_tapping_retry_delivers_the_file_on_a_second_attempt
+          inbox = FlakyInbox.new("/tmp/inbox/notes.txt", Api::Unavailable.new("SSL EOF"))
+          _executor, router = shell_tab(inbox: inbox)
+
+          router.handle(with_document("notes.txt", chat_id: OWNER))
+          key = button_key(@api.sent.last, "🔄 Try again")
+          router.handle(pressed(key, chat_id: OWNER))
+
+          assert_includes @api.last_text, "Saved"
+        end
+
+        def test_retrying_a_button_with_no_attachment_left_says_so
+          router = build_router
+
+          router.handle(pressed(@store.put({ "action" => "retry_attachment", "message" => {} }), chat_id: OWNER))
+
+          assert_includes @api.last_text, "send it again"
         end
 
         # A stranger's file must not reach the disk at all — the
@@ -1654,6 +1938,7 @@ module AgentsControl
         end
 
         private
+
         class FakeInbox
           attr_reader :fetches
 
@@ -1674,6 +1959,18 @@ module AgentsControl
           def fetch(_attachment) = @paths.shift
         end
 
+        # Simulates a download that's still in flight: fetch doesn't
+        # return until the test releases it.
+        class BlockingInbox
+          def initialize = @release = Thread::Queue.new
+          def release! = @release << true
+
+          def fetch(_attachment)
+            @release.pop
+            "/tmp/inbox/x.png"
+          end
+        end
+
         def in_album(update)
           update["message"]["media_group_id"] = "13785"
           update
@@ -1682,6 +1979,22 @@ module AgentsControl
         class FailingInbox
           def initialize(error) = @error = error
           def fetch(_attachment) = raise(@error)
+        end
+
+        # Fails the first fetch, succeeds on every one after — what a
+        # retry button finds once the network's back.
+        class FlakyInbox
+          def initialize(path, error)
+            @path = path
+            @error = error
+          end
+
+          def fetch(_attachment)
+            return @path if @failed_once
+
+            @failed_once = true
+            raise @error
+          end
         end
 
         def with_document(name, caption: nil, reply_to: nil, chat_id:)
@@ -1748,6 +2061,8 @@ module AgentsControl
             @calls << [id, text]
             true
           end
+
+          def focus(_id) = true
         end
 
         # An empty response specifically for the backend_api session's
@@ -1783,14 +2098,24 @@ module AgentsControl
           [executor, build_router(config: config, executor: executor, passphrase: passphrase, inbox: inbox)]
         end
 
-        def build_router(config: @config, store: @store, executor: @executor, passphrase: nil, inbox: nil)
+        # A no-op by default: the real one sends this very process a
+        # signal whose default action is to die, and no test here has
+        # any business doing that.
+        # Attachments run inline here rather than on AttachmentQueue's
+        # real background thread: tests assert right after handle()
+        # returns, and a genuine race with a worker thread would make
+        # them flaky rather than exercise anything meaningful.
+        def build_router(config: @config, store: @store, executor: @executor, passphrase: nil, inbox: nil,
+                         reload_trigger: -> {}, attachment_queue: FakeAttachmentQueue.new)
           Router.new(
             api: @api,
             registry: Registry.new(executor: executor),
             store: store,
             config: config,
             passphrase: passphrase || FakePassphrase.new(nil),
-            inbox: inbox
+            inbox: inbox,
+            reload_trigger: reload_trigger,
+            attachment_queue: attachment_queue
           )
         end
 

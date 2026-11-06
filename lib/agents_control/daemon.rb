@@ -285,8 +285,13 @@ module AgentsControl
     end
 
     def start_bot
+      # Two independent Registry instances, not one shared: Router
+      # reaches one of them from its poll thread and the other from
+      # its attachment queue's own worker thread, and each scans iTerm2
+      # (and the process tree) on its own, so neither ever shares —
+      # or races — the other's cache. See Router#registry.
       router = Channels::Telegram::Router.new(
-        api: api, registry: Registry.new, store: @store,
+        api: api, registry: Registry.new, attachment_registry: Registry.new, store: @store,
         config: @config, pending: pending, logger: @logger
       )
 
