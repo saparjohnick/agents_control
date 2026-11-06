@@ -33,6 +33,8 @@ module AgentsControl
       event = agent.to_event(payload)
       return {} unless event
 
+      remember_session(event)
+
       reply = decide(event)
       return {} unless reply
 
@@ -43,6 +45,17 @@ module AgentsControl
     end
 
     private
+
+    # Run for every event, even the ones that never make a sound
+    # (SessionStart is silent — see notifiable?) — that's the one
+    # moment Channel can tie this session to a specific tab without
+    # guessing. A failure here is ours, not the agent's: notify/ask
+    # still have to run, same reasoning as notify's own rescue below.
+    def remember_session(event)
+      @channel.remember_session(event)
+    rescue StandardError => e
+      log("couldn't remember session: #{e.class}")
+    end
 
     def decide(event)
       unless event.question?

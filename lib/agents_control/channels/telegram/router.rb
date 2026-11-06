@@ -158,37 +158,77 @@ module AgentsControl
           type_into_session(chat_id, target, text)
         end
 
-        # First, the exact session by session_id — unambiguous even when
-        # several tabs share one cwd, and works for any session type:
-        # /run and /screen remember the terminal's own session id, not
-        # an agent's hook id, so this resolves directly whether the
-        # target is an agent or a plain shell tab. Matching by cwd is
-        # the fallback for when that tab has already closed — an agent
-        # match wins there if one exists (the common case: replying to
-        # an agent's own notification), otherwise any matching tab does
-        # (a plain tab mid-interactive-command has no agent to prefer).
-        #
-        # Returns the session it typed into, or nil once it has said why not.
+        # Returns the session it typed into, or nil once it has either
+        # said why not or offered disambiguation buttons.
         def type_into_session(chat_id, target, text)
-          session = session_for(chat_id, target)
+          session = resolve_session(chat_id, target) { |candidates| offer_disambiguation(chat_id, target, candidates, text) }
           execute(chat_id, session, text, show_result: !session.agent?) if session
           session
         end
 
+        # Same resolution, but with no text to hand over once it's
+        # picked — a plain "several tabs" message is the best this can do.
         def session_for(chat_id, target)
-          exact = @registry.refresh.find(target["session_id"])
+          resolve_session(chat_id, target) { |candidates| ask_to_pick_a_number(chat_id, candidates) }
+        end
+
+        # Exact match first (learned_session_id picks up a mapping even
+        # if it was learned after this target was stored), then cwd as a
+        # fallback for a closed tab, preferring an agent match if one exists.
+        def resolve_session(chat_id, target)
+          exact = @registry.refresh.find(learned_session_id(target))
           return exact if exact && !exact.terminalless?
 
           matching = tabs_for(target["cwd"], agents_only: target["from_agent"])
-
           return matching.first if matching.size == 1
 
-          say(chat_id, if matching.empty?
-                         "#{target['label']} isn't waiting anymore, and I couldn't find the tab."
-                       else
-                         "#{target['label']} has several tabs — use /run NUMBER to pick one."
-                       end)
+          if matching.empty?
+            say(chat_id, "#{target['label']} isn't waiting anymore, and I couldn't find the tab.")
+            return nil
+          end
+
+          tiebreak_by_last_interaction(chat_id, matching) || yield(matching)
+        end
+
+        def learned_session_id(target) = @store.get(agent_session_key(target["session_id"])) || target["session_id"]
+
+        def agent_session_key(hook_session_id) = "agent_session:#{hook_session_id}"
+
+        # Two real tabs sharing a cwd can't be told apart by directory
+        # alone — whichever one the chat was already talking to wins.
+        def tiebreak_by_last_interaction(chat_id, matching)
+          last = @store.get(last_target_key(chat_id))
+          last && matching.find { |session| session.id == last["session_id"] }
+        end
+
+        def ask_to_pick_a_number(chat_id, candidates)
+          say(chat_id, "#{candidates.first.label} has several tabs — use /run NUMBER to pick one.")
           nil
+        end
+
+        # A tap both delivers the held-up text and teaches the mapping
+        # for next time: once a human points at the right tab for this
+        # agent's hook session, every later message it sends resolves on
+        # its own — see learned_session_id.
+        def offer_disambiguation(chat_id, target, candidates, text)
+          rows = candidates.map { |session| [disambiguation_button(session, target, text)] }
+          say(chat_id, "#{candidates.first.label} has several tabs — which one?", markup: { inline_keyboard: rows })
+          nil
+        end
+
+        def disambiguation_button(session, target, text)
+          payload = { "action" => "disambiguate", "hook_session_id" => target["session_id"],
+                      "session_id" => session.id, "text" => text }
+          { text: session.tty.to_s.sub(%r{\A/dev/}, ""), callback_data: @store.put(payload, ttl: 600) }
+        end
+
+        def resolve_disambiguation(chat_id, payload)
+          session = @registry.refresh.find(payload["session_id"])
+          return say(chat_id, "That tab closed before you picked.") unless session
+
+          @store.put(session.id, ttl: REPLY_TARGET_TTL, key: agent_session_key(payload["hook_session_id"]))
+          sent = execute(chat_id, session, payload["text"], show_result: !session.agent?)
+          remember_reply(chat_id, sent, session)
         end
 
         # A hook reports the directory the agent is in now, while the
@@ -940,6 +980,7 @@ module AgentsControl
           when "passphrase_wizard" then start_wizard(chat_id)
           when "passphrase_never" then stop_offering(chat_id)
           when "ask_question_choice" then answer_ask_user_question(chat_id, payload)
+          when "disambiguate" then resolve_disambiguation(chat_id, payload)
           else act_on_session(chat_id, payload)
           end
         end

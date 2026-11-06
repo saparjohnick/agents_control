@@ -47,6 +47,24 @@ module AgentsControl
           end
         end
 
+        # Ties Claude's hook session_id (unrelated to any terminal) to
+        # the registry session actually running it, resolved once while
+        # unambiguous and trusted afterward — Router's exact-match
+        # lookup depends on this. Called for every event, including
+        # SessionStart, which Dispatcher otherwise keeps silent.
+        def remember_session(event)
+          return unless event.session_id && event.cwd
+
+          key = session_map_key(event.session_id)
+          return if @store.get(key)
+
+          session = resolve_session(event)
+          return unless session
+
+          @store.put(session.id, ttl: REPLY_TARGET_TTL, key: key)
+          remember_as_last(event, session) if event.kind == :started
+        end
+
         private
 
         def registry = @registry ||= Registry.new
@@ -135,12 +153,37 @@ module AgentsControl
           id = sent.is_a?(Hash) ? sent["message_id"] : nil
           return unless id
 
-          target = { "session_id" => event.session_id, "question_id" => question_id,
-                     "cwd" => event.cwd, "label" => event.label, "from_agent" => true }
+          resolved_id = mapped_session_id(event)
+          target = { "session_id" => resolved_id || event.session_id,
+                     "question_id" => question_id, "cwd" => event.cwd, "label" => event.label,
+                     "from_agent" => true, "resolved" => !resolved_id.nil? }
           @store.put(target, ttl: REPLY_TARGET_TTL, key: "reply:#{chat_id}:#{id}")
           # Where a message sent without a reply goes — see the Router.
-          @store.put(target, ttl: REPLY_TARGET_TTL, key: "last:#{chat_id}")
+          @store.put(target, ttl: REPLY_TARGET_TTL, key: "last:#{chat_id}") unless downgrades_a_resolved_last?(chat_id, target)
         end
+
+        # An unresolved event mustn't bump a "last" that already points
+        # at a real tab — an unrelated agent's own notification would
+        # otherwise knock the live conversation off course.
+        def downgrades_a_resolved_last?(chat_id, target)
+          return false if target["resolved"]
+
+          current = @store.get("last:#{chat_id}")
+          current && current["resolved"] != false
+        end
+
+        # Makes a freshly started session the target for Router's
+        # reply-less messages, with no notification needed to set it.
+        def remember_as_last(event, session)
+          target = { "session_id" => session.id, "question_id" => nil, "cwd" => event.cwd,
+                     "label" => event.label, "from_agent" => true }
+
+          chats.each { |chat_id| @store.put(target, ttl: REPLY_TARGET_TTL, key: "last:#{chat_id}") }
+        end
+
+        def mapped_session_id(event) = @store.get(session_map_key(event.session_id))
+
+        def session_map_key(session_id) = "agent_session:#{session_id}"
 
         # A short session tag in the header. Needed so that in a chat
         # with several agents it's clear which one a message belongs to

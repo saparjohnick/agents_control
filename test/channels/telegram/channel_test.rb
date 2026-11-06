@@ -134,6 +134,109 @@ module AgentsControl
           assert_match(/#\h{4}/, @api.last_text)
         end
 
+        # ── session routing ────────────────────────────────────────────────
+        #
+        # Claude's own session_id is unrelated to any terminal — remember_session
+        # ties it to the registry session actually running it, so a reply to
+        # the agent's own message can resolve to one exact tab instead of
+        # falling back to an ambiguous cwd match (Router#session_for).
+
+        def test_remember_session_maps_claude_session_id_to_the_resolved_tab
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1")]))
+
+          channel.remember_session(event)
+
+          assert_equal "S1", @store.get("agent_session:#{event.session_id}")
+        end
+
+        def test_remember_session_does_nothing_when_the_tab_is_ambiguous
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1"), agent_session("S2")]))
+
+          channel.remember_session(event)
+
+          assert_nil @store.get("agent_session:#{event.session_id}")
+        end
+
+        # Once resolved, a second tab landing on the same cwd must not
+        # undo it — re-resolving every time is exactly the ambiguity this
+        # mapping exists to avoid.
+        def test_remember_session_keeps_its_first_resolution_once_the_cwd_turns_ambiguous
+          channel_with_registry(FakeRegistry.new([agent_session("S1")])).remember_session(event)
+
+          channel_with_registry(FakeRegistry.new([agent_session("S1"), agent_session("S2")]))
+            .remember_session(event)
+
+          assert_equal "S1", @store.get("agent_session:#{event.session_id}")
+        end
+
+        # Once a session is mapped, every reply target built for it uses
+        # the resolved tab, not Claude's own session id — this is what
+        # makes Router's exact-match path actually match.
+        def test_notification_uses_the_resolved_session_once_mapped
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1")]))
+          channel.remember_session(event)
+
+          channel.notify(event)
+
+          assert_equal "S1", @store.get("last:424242")["session_id"]
+        end
+
+        # Reproduces a real report: two agents share one cwd, so neither
+        # ever resolves (test_remember_session_does_nothing_when_the_tab_is_ambiguous).
+        # One of them notifying must not knock a focused, exact "last"
+        # off course and onto cwd-guessing ambiguity the human never asked for.
+        def test_an_unresolved_notification_does_not_clobber_an_already_resolved_last_target
+          @store.put({ "session_id" => "S1", "cwd" => Fixtures::CWD, "label" => "S1", "resolved" => true },
+                     key: "last:424242")
+
+          @channel.notify(event)
+
+          assert_equal "S1", @store.get("last:424242")["session_id"]
+        end
+
+        # Router's /focus and the /tabs button write a "last" target with
+        # no "resolved" key at all — it came straight from an exact
+        # Session object, not from this ambiguity bookkeeping, so it's
+        # just as trustworthy and just as worth protecting.
+        def test_an_unresolved_notification_does_not_clobber_a_last_target_set_by_focus
+          @store.put({ "session_id" => "S1", "cwd" => Fixtures::CWD, "label" => "S1" }, key: "last:424242")
+
+          @channel.notify(event)
+
+          assert_equal "S1", @store.get("last:424242")["session_id"]
+        end
+
+        # With nothing better already in place, the ambiguous guess is
+        # still better than no target at all — Router's own cwd fallback
+        # is what turns it into a "has several tabs" message.
+        def test_an_unresolved_notification_still_sets_last_with_nothing_better_to_protect
+          @channel.notify(event)
+
+          refute_nil @store.get("last:424242")
+          assert_equal false, @store.get("last:424242")["resolved"]
+        end
+
+        # Launching Claude in a tab alone — before it has said anything —
+        # still makes that tab the target for whatever comes next with no
+        # reply attached. SessionStart never sends a Telegram message
+        # (Dispatcher silences it), so this can't rely on notify at all.
+        def test_session_start_becomes_the_last_target_with_no_message_sent
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1")]))
+
+          channel.remember_session(started_event)
+
+          assert_empty @api.sent
+          assert_equal "S1", @store.get("last:424242")["session_id"]
+        end
+
+        def test_session_start_is_a_no_op_when_the_tab_is_ambiguous
+          channel = channel_with_registry(FakeRegistry.new([agent_session("S1"), agent_session("S2")]))
+
+          channel.remember_session(started_event)
+
+          assert_nil @store.get("last:424242")
+        end
+
         # ── AskUserQuestion ──────────────────────────────────────────────
         #
         # Not a request for tool access, so "Allow"/"Deny" don't apply —
@@ -325,6 +428,10 @@ module AgentsControl
           Agents::ClaudeCode.new.to_event(
             Fixtures::HOOK_STOP.merge("last_assistant_message" => text)
           )
+        end
+
+        def started_event
+          Agents::ClaudeCode.new.to_event(Fixtures::HOOK_SESSION_START)
         end
 
         def permission_event(tool_name:, tool_input:)

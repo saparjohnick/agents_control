@@ -6,12 +6,13 @@ module AgentsControl
   class DispatcherTest < Minitest::Test
     # Stub channel: remembers notifications and hands back a preset reply.
     class SpyChannel
-      attr_reader :notified, :asked
+      attr_reader :notified, :asked, :remembered
 
       def initialize(reply: Reply.none)
         @reply = reply
         @notified = []
         @asked = []
+        @remembered = []
       end
 
       def notify(event) = @notified << event
@@ -20,6 +21,8 @@ module AgentsControl
         @asked << { event: event, timeout: timeout }
         @reply
       end
+
+      def remember_session(event) = @remembered << event
     end
 
     def setup
@@ -169,6 +172,16 @@ module AgentsControl
       assert_empty @channel.notified
     end
 
+    # SessionStart never makes a sound (it isn't notifiable), but it's
+    # the one moment the agent's session can be tied to a specific tab
+    # without guessing — so it still has to reach the channel.
+    def test_session_start_still_registers_its_session_despite_being_silent
+      build.handle(Fixtures::HOOK_SESSION_START)
+
+      assert_empty @channel.notified
+      assert_equal 1, @channel.remembered.size
+    end
+
     def test_rate_limit_is_always_reported
       build.handle(Fixtures::HOOK_RATE_LIMIT)
 
@@ -196,6 +209,18 @@ module AgentsControl
       def channel.ask(_event, pending:, timeout:) = raise("channel broke")
 
       assert_empty build(channel: channel, away: true).handle(Fixtures::HOOK_PERMISSION)
+    end
+
+    # A failure tying the session to a tab is ours, not the agent's —
+    # the human still has to be asked.
+    def test_a_broken_session_mapping_does_not_block_the_question
+      channel = SpyChannel.new(reply: Reply.allow)
+      def channel.remember_session(_event) = raise("mapping broke")
+
+      response = build(channel: channel, away: true).handle(Fixtures::HOOK_PERMISSION)
+
+      assert_equal 1, channel.asked.size
+      assert_equal "allow", response.dig("hookSpecificOutput", "decision", "behavior")
     end
 
     def test_reply_timeout_is_taken_from_settings
