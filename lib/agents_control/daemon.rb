@@ -51,6 +51,8 @@ module AgentsControl
       start_anchors
       start_screen_watcher
       start_rate_limit_watcher
+      start_auto_reloader
+      start_auto_updater
       trap_reload
       install_agents
       verify_hooks
@@ -72,6 +74,8 @@ module AgentsControl
       @scheduler&.stop
       @screen_watcher&.stop
       @rate_limit_watcher&.stop
+      @auto_reloader&.stop
+      @auto_updater&.stop
       remove_agents
     end
 
@@ -172,6 +176,18 @@ module AgentsControl
         registry: Registry.new, config: @config, store: @store, api: api,
         interval: @config.get("terminal.rate_limit_poll_interval", 60), logger: @logger
       ).start
+    end
+
+    def start_auto_reloader
+      @auto_reloader = AutoReloader.new(config: @config, logger: @logger) { reload! }.start
+    end
+
+    def start_auto_updater
+      @auto_updater = AutoUpdater.new(
+        interval: @config.get("daemon.update_check_interval", 7 * 86_400),
+        delay: @config.get("daemon.update_delay", 2 * 86_400),
+        config: @config, logger: @logger
+      ) { reload! }.start
     end
 
     # `agents_control reload` and Router's /reload both send HUP here.

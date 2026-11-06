@@ -90,6 +90,20 @@ module AgentsControl
         "watch_menus" => true,
         "menu_poll_interval" => 20,
         "rate_limit_poll_interval" => 60
+      },
+      "daemon" => {
+        # auto_reload: restart into code someone already pulled by hand
+        # (or had an agent pull) — on by default, since nothing here
+        # decided on its own to trust new code, it's just not making
+        # you remember to restart after you already did. auto_update is
+        # the other half: fetching that code in the first place,
+        # unattended — off by default, since that part IS deciding to
+        # trust whatever's newest upstream without anyone looking.
+        # See AutoReloader and AutoUpdater.
+        "auto_reload" => true,
+        "auto_update" => false,
+        "update_check_interval" => 7 * 86_400,
+        "update_delay" => 2 * 86_400
       }
     }.freeze
 
