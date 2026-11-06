@@ -241,7 +241,7 @@ module AgentsControl
         def read
           return {} unless ::File.exist?(@path)
 
-          parsed = JSON.parse(::File.read(@path))
+          parsed = JSON.parse(::File.read(@path, encoding: "UTF-8"))
           parsed.is_a?(Hash) ? parsed : {}
         rescue JSON::ParserError
           {}

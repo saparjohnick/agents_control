@@ -39,7 +39,7 @@ module AgentsControl
         def own_hook(path = settings_path)
           return unless File.exist?(path)
 
-          groups = JSON.parse(File.read(path)).dig("hooks", "Stop")
+          groups = JSON.parse(File.read(path, encoding: "UTF-8")).dig("hooks", "Stop")
           Array(groups).flat_map { |group| Array(group["hooks"]) }
                        .find { |hook| hook["_agents_control"] }
         rescue JSON::ParserError
@@ -230,7 +230,7 @@ module AgentsControl
       def read_settings
         return {} unless File.exist?(@settings_path)
 
-        parsed = JSON.parse(File.read(@settings_path))
+        parsed = JSON.parse(File.read(@settings_path, encoding: "UTF-8"))
         parsed.is_a?(Hash) ? parsed : {}
       rescue JSON::ParserError
         # A broken file that isn't ours to fix, but we definitely have

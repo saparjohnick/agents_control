@@ -27,6 +27,20 @@ module AgentsControl
       assert_equal 8, key.length
     end
 
+    # Reproduces a real crash: under launchd (no LANG/LC_ALL, so Ruby's
+    # default external encoding falls back to US-ASCII) a store file
+    # with any non-ASCII byte — a Cyrillic label, here — raised
+    # Encoding::InvalidByteSequenceError before load_file forced UTF-8.
+    def test_reads_non_ascii_content_regardless_of_the_default_external_encoding
+      key = @store.put({ "label" => "привет" })
+      previous = Encoding.default_external
+      Encoding.default_external = Encoding::US_ASCII
+
+      assert_equal({ "label" => "привет" }, build.get(key))
+    ensure
+      Encoding.default_external = previous
+    end
+
     def test_keys_are_unique
       keys = Array.new(50) { @store.put({ "n" => _1 }) }
 

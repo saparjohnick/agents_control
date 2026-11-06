@@ -245,6 +245,42 @@ module AgentsControl
         assert_equal "http://127.0.0.1:47653/", hook["url"]
       end
 
+      # Under launchd (no LANG/LC_ALL) Ruby's default external encoding
+      # falls back to US-ASCII — a settings.json with any non-ASCII byte,
+      # a Cyrillic project label here, raised
+      # Encoding::InvalidByteSequenceError before the read forced UTF-8,
+      # which crash-looped the whole daemon on every launchd start.
+      def test_own_hook_reads_non_ascii_content_regardless_of_the_default_external_encoding
+        path = File.join(@dir, "settings.json")
+        File.write(path, JSON.generate({
+          "_label" => "привет",
+          "hooks" => { "Stop" => [
+            { "hooks" => [{ "type" => "http", "url" => "http://127.0.0.1:47653/", "_agents_control" => true }] }
+          ] }
+        }))
+        previous = Encoding.default_external
+        Encoding.default_external = Encoding::US_ASCII
+
+        hook = Agents::ClaudeCode.own_hook(path)
+
+        assert_equal "http://127.0.0.1:47653/", hook["url"]
+      ensure
+        Encoding.default_external = previous
+      end
+
+      def test_installed_reads_non_ascii_settings_regardless_of_the_default_external_encoding
+        File.write(@settings, JSON.generate({
+          "_label" => "привет",
+          "hooks" => ClaudeCode::EVENTS.to_h { |name| [name, [{ "hooks" => [{ "_agents_control" => true }] }]] }
+        }))
+        previous = Encoding.default_external
+        Encoding.default_external = Encoding::US_ASCII
+
+        assert @agent.installed?
+      ensure
+        Encoding.default_external = previous
+      end
+
       def test_no_hook_of_ours_is_no_hook
         path = File.join(@dir, "settings.json")
         File.write(path, JSON.generate({

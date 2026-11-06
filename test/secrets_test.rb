@@ -145,6 +145,22 @@ module AgentsControl
         end
       end
 
+      # Under launchd (no LANG/LC_ALL) Ruby's default external encoding
+      # falls back to US-ASCII — a secret containing any non-ASCII byte
+      # raised Encoding::InvalidByteSequenceError before read forced UTF-8.
+      def test_reads_non_ascii_content_regardless_of_the_default_external_encoding
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, "creds.json")
+          Secrets::Providers::File.new(path: path).set("label", "привет")
+          previous = Encoding.default_external
+          Encoding.default_external = Encoding::US_ASCII
+
+          assert_equal "привет", Secrets::Providers::File.new(path: path).get("label")
+        ensure
+          Encoding.default_external = previous
+        end
+      end
+
       def test_announces_itself_as_the_weaker_option
         assert_predicate Secrets::Providers::File.new(path: "/tmp/x"), :insecure?
       end
