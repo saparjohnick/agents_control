@@ -1,6 +1,16 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# launchd, systemd and a self-exec reload have no interactive shell's
+# gem setup to inherit — pin to vendor/bundle ourselves. Skipped for a
+# real gem install, which has no Gemfile here and already resolved its
+# dependencies at install time.
+gemfile = File.expand_path("../Gemfile", __dir__)
+if File.exist?(gemfile)
+  ENV["BUNDLE_GEMFILE"] ||= gemfile
+  require "bundler/setup"
+end
+
 require_relative "../lib/agents_control"
 
 AgentsControl::CLI.start(ARGV)
