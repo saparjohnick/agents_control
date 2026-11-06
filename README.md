@@ -203,6 +203,14 @@ name through in passing — and swept after `telegram.inbox_keep_days`
 directory would otherwise only grow. Telegram caps what a bot can
 download at 20MB; anything larger is refused before the round trip.
 
+### Sending files out
+
+`/getfile PATH` sends a file from this machine to the chat — a log, a
+build artifact, anything on disk. `/getfile N` lists the N'th tab's two
+most recently touched files (`Read`/`Edit`/`Write`/`NotebookEdit` in its
+transcript) as buttons; tapping one sends it. With no argument, it uses
+the tab the current conversation is already with.
+
 ### Two modes
 
 This whole section is about Claude Code specifically — its hooks are
@@ -324,7 +332,32 @@ continuation itself once the time comes (with a minute of headroom).
 ```sh
 agents_control doctor           # is everything in place
 agents_control service install  # autostart (launchd / systemd)
+agents_control reload           # restart into updated code, same tab if there is one
 ```
+
+`reload` (also `/reload` from the chat) finds the process holding the
+hooks port and sends it HUP; the daemon traps that and `exec`s itself —
+same process, same terminal tab, freshly loaded from disk. Useful right
+after a `git pull` or a hand-edited file, instead of stopping and
+starting it by hand.
+
+It can also notice and act on its own, in two separate ways:
+
+- **`daemon.auto_reload`** (on by default): if the local copy of the
+  tracked upstream branch has moved — someone, or some agent, already
+  ran `git pull` — it reloads into that code within a minute. A plain
+  local commit doesn't trigger this: only the upstream ref moving does,
+  which matters if the daemon is running from the same checkout it's
+  being developed in.
+- **`daemon.auto_update`** (off by default): fetches on its own, once a
+  week (`daemon.update_check_interval`), and pulls if the checkout is
+  clean and fast-forwardable and the upstream commit has sat there for
+  at least 2 days (`daemon.update_delay`) — long enough that it isn't
+  the thing someone pushed five minutes ago. Runs `bundle install` if
+  needed, then reloads. This is the one that decides, unattended, to
+  trust unreviewed code — opt in explicitly if that's wanted.
+
+Either way, a diverged or dirty working tree, or no tracked remote, is left alone.
 
 `doctor` checks **the environment the daemon will actually get**, not
 the current one: an interactive shell can show a different Ruby and a
